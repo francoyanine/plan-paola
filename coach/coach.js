@@ -216,7 +216,8 @@
       return { title: A.name, html: parts.join('') };
     }
     const b = C.blockFor(st.startDate, today());
-    const monday = mondayOf(today());
+    const pre = b.phase === 'pre';
+    const monday = pre ? st.startDate : mondayOf(today());
     const map = C.scheduleFor(st.upperDay);
     const wkSessions = sessionsSorted().filter(s => s.week === w);
     const done = new Set(wkSessions.map(s => s.routine));
@@ -225,8 +226,8 @@
       const rr = r && ROUTINES[r];
       return `<div class="wd ${rr ? rr.kind : ''} ${rr && rr.optional ? 'opt' : ''} ${r && done.has(r) ? 'done' : ''} ${addDays(monday, i) === today() ? 'today' : ''}"><span class="d">${d}</span><span class="s">${rr ? rr.name.replace(' ', '<br>') : '·'}</span><span class="m">${r && done.has(r) ? '✓' : ''}</span></div>`;
     }).join('');
-    parts.push(`<section class="card"><div class="card-head"><span class="eyebrow">${esc(A.name)} · semana ${w} del plan</span><span class="small muted">desde ${esc(fmtShort(st.startDate))}</span></div>
-      <h2>${esc(b.info.name)}${b.weekIn ? ` · semana ${b.weekIn}${b.weeksTotal ? ' de ' + b.weeksTotal : ''}` : ''}</h2>
+    parts.push(`<section class="card"><div class="card-head"><span class="eyebrow">${esc(A.name)} · ${pre ? 'todavía no empieza' : `semana ${w} del plan`}</span><span class="small muted">${pre ? 'parte el' : 'desde'} ${esc(fmtShort(st.startDate))}</span></div>
+      <h2>${pre ? `Parte el ${esc(fmtDay(st.startDate))}` : `${esc(b.info.name)}${b.weekIn ? ` · semana ${b.weekIn}${b.weeksTotal ? ' de ' + b.weeksTotal : ''}` : ''}`}</h2>
       <div class="progress"><span style="width:${Math.min(100, Math.max(0, w) / 10 * 100)}%"></span></div>
       <div class="weekstrip">${strip}</div></section>`);
 
@@ -254,9 +255,10 @@
       ? alerts.sort((a, b2) => (a.date < b2.date ? 1 : -1)).slice(0, 12).map(a => `<div class="li" style="align-items:flex-start"><span class="small muted num" style="min-width:3.6em">${esc(fmtShort(a.date))}</span><span class="grow"><span class="s" style="color:var(--ink)">${a.html}</span></span></div>`).join('')
       : '<div class="li"><span class="muted small">Sin mensajes en las últimas dos semanas.</span></div>'}</div></section>`);
 
-    const rows = [w, w + 1].map(x => {
+    const rows = (pre ? [1, 2] : [w, w + 1]).map(x => {
       const s = weekStatus(x);
-      return `<a class="li" href="#/semana/${x}"><span class="grow"><span class="t">Semana ${x}${x === w ? ' (actual)' : ' (próxima)'}</span><span class="s">${esc(phaseLabel(x))} · ${esc(fmtShort(weekMonday(x)))}</span></span><span class="tag ${statusClass(s.key)}">${esc(s.label)}</span><span class="chev">›</span></a>`;
+      const tag = pre ? (x === 1 ? ' (primera)' : '') : (x === w ? ' (actual)' : ' (próxima)');
+      return `<a class="li" href="#/semana/${x}"><span class="grow"><span class="t">Semana ${x}${tag}</span><span class="s">${esc(phaseLabel(x))} · ${esc(fmtShort(weekMonday(x)))}</span></span><span class="tag ${statusClass(s.key)}">${esc(s.label)}</span><span class="chev">›</span></a>`;
     }).join('');
     parts.push(`<section class="card flush"><div style="padding:14px 16px 4px"><h3>Progresión</h3></div><div class="list">${rows}</div></section>`);
     return { title: A.name, html: parts.join('') };
