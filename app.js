@@ -544,7 +544,7 @@
     const labels = exNumbering(r);
     const parts = [];
     parts.push(`<div class="wk-head ${r.kind}"><span class="eyebrow">${esc(r.day)} · ≈${r.minutes} min</span><span class="rname">${r.name}</span>
-      <p class="muted small">${r.exercises.some(ex => presFor(week, ex.id)) ? `Cargas y RIR indicados por ${esc(S.settings.coachName)} para la semana ${week}.` : (week <= 2 ? 'Semanas 1–2: todas las series a RIR 3, para aprender la técnica.' : 'Primera serie a RIR 2 y las demás a RIR 1.')} Bajar el peso en 2–3 s, recorrido completo.</p></div>`);
+      <p class="muted small">${r.exercises.some(ex => presFor(week, ex.id)) ? `Cargas y RIR indicados por ${esc(S.settings.coachName)} para la semana ${week}.` : (week <= 2 ? 'Semanas 1–2: todas las series a RIR 2, para aprender la técnica.' : 'Primera serie a RIR 2 y las demás a RIR 1.')} Bajar el peso en 2–3 s, recorrido completo.</p></div>`);
     if (S.active && !active) {
       const ar = ROUTINES[S.active.routine];
       parts.push(`<div class="notice"><div><b>Tienes ${ar.name} en curso.</b> Termínalo o descártalo antes de empezar otro. <a class="linkbtn" href="#/workout/${ar.id}">Ir a ${ar.name}</a></div></div>`);
@@ -762,7 +762,7 @@
   function viewPlan() {
     const k = S.settings.kcal;
     const html = `<section class="card prose"><h2>Las fases</h2><ul>
-        <li><b>Semanas 1–4, recomposición:</b> ${nf(k.recomp, 0)} kcal. Las semanas 1–2 son de adaptación, con todas las series a RIR 3.</li>
+        <li><b>Semanas 1–4, recomposición:</b> ${nf(k.recomp, 0)} kcal. Las semanas 1–2 son de adaptación, con todas las series a RIR 2.</li>
         <li><b>Semanas 5–10, mini cut:</b> ${nf(k.cut, 0)} kcal. El objetivo es bajar 0,3–0,45 kg por semana sin perder fuerza.</li>
         <li><b>Después:</b> 1–2 semanas en mantención y se define el siguiente bloque.</li></ul></section>
       <section class="card prose"><h2>Cómo se entrena</h2><ul>

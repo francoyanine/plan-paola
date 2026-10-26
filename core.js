@@ -35,13 +35,13 @@
   const weekStart = (startDate, week) => addDays(startDate, (week - 1) * 7);
 
   // RIR del coach: "2-1" = primera serie RIR 2 y el resto RIR 1; "1" o "0" = todas iguales.
-  // Sin indicación: semanas 1–2 todo a RIR 3, después 2-1.
-  const RIR_SCHEMES = ['2-1', '1-0', '1', '0'];
+  // Sin indicación: semanas 1–2 todo a RIR 2, después 2-1. Nunca se usa RIR 3.
+  const RIR_SCHEMES = ['2-1', '2', '1-0', '1', '0'];
   function parseRir(scheme) {
     const parts = String(scheme || '').split('-').map(s => s.trim()).filter(Boolean).map(Number);
     return parts.length && parts.every(n => Number.isInteger(n) && n >= 0 && n <= 5) ? parts : null;
   }
-  const defaultScheme = week => (week <= 2 ? '3' : '2-1');
+  const defaultScheme = week => (week <= 2 ? '2' : '2-1');
   function rirForSet(scheme, week, i) {
     const parts = parseRir(scheme) || parseRir(defaultScheme(week));
     return parts[Math.min(i, parts.length - 1)];
