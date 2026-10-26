@@ -29,7 +29,8 @@
     return {
       v: 1,
       settings: { startDate: mondayOf(today()), upperDay: 'mar', coachName: 'Franco', coachPin: '', kcal: { recomp: 1800, cut: 1500 }, hideInstall: false },
-      swaps: {}, sessions: [], active: null, checkins: {}, food: {}, measures: [], sent: {}
+      swaps: {}, sessions: [], active: null, checkins: {}, food: {}, measures: [], sent: {},
+      plan: {}, dirty: {}, deletes: [], syncedUser: null
     };
   }
   function hydrate(s) {
@@ -55,6 +56,134 @@
 
   let coachUnlocked = false;
 
+  // ---------- Conexión con la app de coach (Supabase) ----------
+  // Sin url ni anonKey en config.js, la app funciona solo en el teléfono, como antes.
+  const CFG = window.PLAN_CONFIG || {};
+  const sb = CFG.url && CFG.anonKey && window.supabase
+    ? window.supabase.createClient(CFG.url, CFG.anonKey, { auth: { persistSession: true, autoRefreshToken: true, storageKey: 'plan-paola-auth' } })
+    : null;
+  let user = null;
+  let authReady = !sb;
+  let notLinked = false;
+  const syncInfo = { state: 'idle', at: null, error: '' };
+  S.dirty = S.dirty || {};
+  S.deletes = S.deletes || [];
+  S.plan = S.plan || {};
+
+  function recordData(kind, key) {
+    if (kind === 'session') return S.sessions.find(x => x.id === key) || null;
+    if (kind === 'checkin') return S.checkins[key] || null;
+    if (kind === 'food') return S.food[key] || null;
+    if (kind === 'measure') return S.measures.find(m => m.id === key) || null;
+    return null;
+  }
+  let pushTimer = null;
+  function schedulePush() { clearTimeout(pushTimer); pushTimer = setTimeout(() => { push(); }, 1500); }
+  function markDirty(kind, key) {
+    if (!sb) return;
+    (S.dirty[kind] = S.dirty[kind] || {})[key] = true;
+    save(); schedulePush();
+  }
+  function markDeleted(kind, key) {
+    if (!sb) return;
+    if (S.dirty[kind]) delete S.dirty[kind][key];
+    S.deletes.push({ kind, key });
+    save(); schedulePush();
+  }
+  function markAllDirty() {
+    if (!sb) return;
+    S.dirty = { session: {}, checkin: {}, food: {}, measure: {} };
+    S.sessions.forEach(x => { S.dirty.session[x.id] = true; });
+    Object.keys(S.checkins).forEach(d => { S.dirty.checkin[d] = true; });
+    Object.keys(S.food).forEach(d => { S.dirty.food[d] = true; });
+    S.measures.forEach(m => { S.dirty.measure[m.id] = true; });
+    save();
+  }
+  const pendingCount = () => Object.values(S.dirty).reduce((a, k) => a + Object.keys(k).length, 0) + S.deletes.length;
+
+  // Sube lo pendiente. Si algo cambió mientras se subía, queda marcado para la próxima vez.
+  async function push() {
+    if (!sb || !user || notLinked) return;
+    const rows = [], sent = [];
+    Object.entries(S.dirty).forEach(([kind, keys]) => Object.keys(keys).forEach(key => {
+      const data = recordData(kind, key);
+      if (data) rows.push({ athlete_id: user.id, kind, key, data, updated_at: new Date().toISOString() });
+      sent.push([kind, key, JSON.stringify(data)]);
+    }));
+    const deletes = S.deletes.slice();
+    if (!rows.length && !deletes.length) return;
+    try {
+      if (rows.length) { const { error } = await sb.from('records').upsert(rows); if (error) throw error; }
+      for (const d of deletes) {
+        const { error } = await sb.from('records').delete().match({ athlete_id: user.id, kind: d.kind, key: d.key });
+        if (error) throw error;
+      }
+      sent.forEach(([kind, key, snap]) => { if (S.dirty[kind] && JSON.stringify(recordData(kind, key)) === snap) delete S.dirty[kind][key]; });
+      S.deletes = S.deletes.slice(deletes.length);
+      save();
+      Object.assign(syncInfo, { state: 'ok', at: Date.now(), error: '' });
+    } catch (e) {
+      Object.assign(syncInfo, { state: navigator.onLine ? 'error' : 'offline', error: e.message || String(e) });
+    }
+  }
+
+  // Baja ajustes y semanas enviadas por el coach. En un teléfono vacío, recupera todo lo registrado.
+  async function pull() {
+    const { data: ath, error } = await sb.from('athletes').select('name, settings').eq('id', user.id).maybeSingle();
+    if (error) throw error;
+    notLinked = !ath;
+    if (!ath) return;
+    const rs = ath.settings || {};
+    ['startDate', 'upperDay', 'coachName'].forEach(k => { if (rs[k]) S.settings[k] = rs[k]; });
+    if (rs.kcal) S.settings.kcal = Object.assign({}, S.settings.kcal, rs.kcal);
+    if (rs.swaps) S.swaps = Object.assign({}, rs.swaps);
+    const { data: weeks, error: e2 } = await sb.from('plan_weeks').select('week, published, published_at').not('published_at', 'is', null);
+    if (e2) throw e2;
+    S.plan = {};
+    (weeks || []).forEach(w => { S.plan[w.week] = Object.assign({}, w.published, { publishedAt: w.published_at }); });
+    if (!S.sessions.length && !Object.keys(S.checkins).length) {
+      const { data: recs, error: e3 } = await sb.from('records').select('kind, key, data');
+      if (e3) throw e3;
+      (recs || []).forEach(r => {
+        if (r.kind === 'session') S.sessions.push(r.data);
+        else if (r.kind === 'checkin') S.checkins[r.key] = r.data;
+        else if (r.kind === 'food') S.food[r.key] = r.data;
+        else if (r.kind === 'measure') S.measures.push(r.data);
+      });
+    }
+    save();
+  }
+
+  let syncing = false;
+  async function sync() {
+    if (!sb || !user || syncing) return;
+    if (!navigator.onLine) { syncInfo.state = 'offline'; return; }
+    syncing = true;
+    syncInfo.state = 'syncing';
+    try {
+      await pull();
+      await push();
+      if (syncInfo.state === 'syncing') Object.assign(syncInfo, { state: 'ok', at: Date.now(), error: '' });
+    } catch (e) {
+      Object.assign(syncInfo, { state: navigator.onLine ? 'error' : 'offline', error: e.message || String(e) });
+    }
+    syncing = false;
+    const typing = document.activeElement && ['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName);
+    if (!typing) render();
+  }
+
+  async function initAuth() {
+    if (!sb) return;
+    try {
+      const { data } = await sb.auth.getSession();
+      user = data && data.session ? data.session.user : null;
+    } catch (e) { user = null; }
+    sb.auth.onAuthStateChange((_ev, session) => { user = session ? session.user : null; });
+    authReady = true;
+    render();
+    if (user) sync();
+  }
+
   // ---------- Bloque, fase y metas ----------
   function block(date = today()) {
     const days = daysBetween(S.settings.startDate, date);
@@ -71,8 +200,10 @@
     const { p, g } = b.info.macros;
     return { kcal, p, g, c: Math.max(0, Math.round((kcal - p * 4 - g * 9) / 4)), steps: b.info.steps || 8000, phase: b.phase };
   }
-  const rirFor = (week, i) => (week <= 2 ? 3 : (i === 0 ? 2 : 1));
-  const rirLabel = (week, n) => Array.from({ length: n }, (_, i) => rirFor(week, i)).join(' · ');
+  // Indicación del coach para un ejercicio en una semana: { kg, rir: "2-1", note }, si la envió.
+  const presFor = (week, exId) => (S.plan[week] && S.plan[week].exercises && S.plan[week].exercises[exId]) || null;
+  const rirFor = (week, i, scheme) => CORE.rirForSet(scheme, week, i);
+  const rirLabel = (week, n, scheme) => CORE.rirList(scheme, week, n).join(' · ');
 
   function resolveEx(ex, alt) {
     if (alt && ex.shoulder) {
@@ -315,6 +446,9 @@
       <div class="weekstrip">${strip}</div>
     </section>`);
 
+    const wkPlan = S.plan[b.week];
+    if (wkPlan && wkPlan.note) parts.push(`<div class="notice ok"><div><b>${esc(S.settings.coachName)} · semana ${b.week}:</b> ${esc(wkPlan.note)}</div></div>`);
+
     if (!dayComplete(S.checkins[t])) {
       parts.push(`<a class="notice" href="#/checkin/${t}" style="text-decoration:none"><div><b>Registro de hoy pendiente.</b> Pasos, sueño y dieta. Toma menos de un minuto.</div></a>`);
     }
@@ -363,7 +497,10 @@
     const entry = active ? S.active.ex[ex.id] : null;
     const rx = resolveEx(ex, entry ? entry.alt : !!S.swaps[ex.id]);
     const last = lastPerf(rx.histKey, before);
-    const sug = suggestion(rx, last, week);
+    const pres = presFor(week, ex.id);
+    const scheme = pres && pres.rir;
+    const presKg = pres && pres.kg !== null && pres.kg !== undefined && pres.kg !== '' ? Number(pres.kg) : null;
+    const sug = presKg !== null ? { kg: presKg, text: `Carga indicada por ${S.settings.coachName}: ${nf(presKg, 2)} kg.` } : suggestion(rx, last, week);
     const repsChip = rx.type === 'time' ? 'máx. s' : `${rx.reps[0]}–${rx.reps[1]}`;
     const partner = ex.superset ? r.exercises.find(e => e.id === ex.superset) : null;
     const parts = [];
@@ -374,15 +511,16 @@
     parts.push(`<div class="chips">
       <div class="chip"><span class="k">Series</span><span class="v">${rx.sets}</span></div>
       <div class="chip"><span class="k">Reps</span><span class="v">${repsChip}</span></div>
-      <div class="chip"><span class="k">RIR</span><span class="v">${rx.type === 'time' ? '—' : rirLabel(week, rx.sets)}</span></div>
+      <div class="chip"><span class="k">RIR</span><span class="v">${rx.type === 'time' ? '—' : rirLabel(week, rx.sets, scheme)}</span></div>
       <div class="chip"><span class="k">Desc.</span><span class="v">${partner ? '0 → b' : fmtRest(rx.rest)}</span></div></div>`);
     parts.push(`<p class="ex-note">${esc(rx.note)}</p>`);
+    if (pres && pres.note) parts.push(`<p class="coach-note"><b>${esc(S.settings.coachName)}:</b> ${esc(pres.note)}</p>`);
     if (rx.approach) parts.push(`<p class="approach">Antes: ${rx.approach} ${rx.approach > 1 ? 'series' : 'serie'} de aproximación (≈50 % del peso × 10${rx.approach > 1 ? ', ≈75 % × 5' : ''}). No se anotan.</p>`);
     parts.push(`<div class="perf"><span class="k">${last ? 'Última vez · ' + fmtShort(last.date) : 'Sin registros todavía'}</span>${last ? `<span class="num">${esc(setsText(rx, last.sets))}</span>` : ''}<span class="sug">${esc(sug.text)}</span></div>`);
 
     if (active) {
       const rows = entry.sets.map((s, i) => {
-        const rir = rx.type === 'time' ? 'máx.' : `RIR ${rirFor(week, i)}`;
+        const rir = rx.type === 'time' ? 'máx.' : `RIR ${rirFor(week, i, scheme)}`;
         const kgPh = sug.kg ? nf(sug.kg, 2) : (last && num(last.sets[0].kg) ? nf(num(last.sets[0].kg), 2) : '0');
         const repsPh = rx.type === 'time' ? 'seg' : `${rx.reps[0]}–${rx.reps[1]}`;
         const kgField = rx.type === 'time' || isBodyweight(rx) ? '' :
@@ -406,7 +544,7 @@
     const labels = exNumbering(r);
     const parts = [];
     parts.push(`<div class="wk-head ${r.kind}"><span class="eyebrow">${esc(r.day)} · ≈${r.minutes} min</span><span class="rname">${r.name}</span>
-      <p class="muted small">${week <= 2 ? 'Semanas 1–2: todas las series a RIR 3, para aprender la técnica.' : 'Primera serie a RIR 2 y las demás a RIR 1.'} Bajar el peso en 2–3 s, recorrido completo.</p></div>`);
+      <p class="muted small">${r.exercises.some(ex => presFor(week, ex.id)) ? `Cargas y RIR indicados por ${esc(S.settings.coachName)} para la semana ${week}.` : (week <= 2 ? 'Semanas 1–2: todas las series a RIR 3, para aprender la técnica.' : 'Primera serie a RIR 2 y las demás a RIR 1.')} Bajar el peso en 2–3 s, recorrido completo.</p></div>`);
     if (S.active && !active) {
       const ar = ROUTINES[S.active.routine];
       parts.push(`<div class="notice"><div><b>Tienes ${ar.name} en curso.</b> Termínalo o descártalo antes de empezar otro. <a class="linkbtn" href="#/workout/${ar.id}">Ir a ${ar.name}</a></div></div>`);
@@ -614,10 +752,10 @@
       ['#/historial', 'Historial de entrenamientos', 'Todas las sesiones con sus series'],
       ['#/respaldo', 'Respaldo de datos', 'Guardar o recuperar todo lo registrado'],
       ['#/instalar', 'Instalar en el iPhone', 'Agregarla a la pantalla de inicio'],
-      ['#/coach', 'Modo coach', 'Solo para ' + S.settings.coachName]
+      sb ? ['#/cuenta', 'Cuenta', 'Conexión con ' + S.settings.coachName] : ['#/coach', 'Modo coach', 'Solo para ' + S.settings.coachName]
     ];
     const html = `<section class="card flush"><div class="list">${items.map(([h, t, s]) => `<a class="li" href="${h}"><span class="grow"><span class="t">${esc(t)}</span><span class="s">${esc(s)}</span></span><span class="chev">›</span></a>`).join('')}</div></section>
-      <p class="small muted">Los datos se guardan solo en este teléfono. Haz un respaldo de vez en cuando.</p>`;
+      <p class="small muted">${sb ? `Todo lo que registras le llega a ${esc(S.settings.coachName)} cuando hay internet.` : 'Los datos se guardan solo en este teléfono. Haz un respaldo de vez en cuando.'}</p>`;
     return { title: 'Más', html, pill: phasePill() };
   }
 
@@ -629,7 +767,7 @@
         <li><b>Después:</b> 1–2 semanas en mantención y se define el siguiente bloque.</li></ul></section>
       <section class="card prose"><h2>Cómo se entrena</h2><ul>
         <li><b>RIR</b> son las repeticiones que quedan en reserva. RIR 1 = podrías hacer una más con buena técnica, pero no dos.</li>
-        <li><b>Desde la semana 3:</b> la primera serie a RIR 2 y las demás a RIR 1.</li>
+        <li><b>Desde la semana 3:</b> la primera serie a RIR 2 y las demás a RIR 1, salvo que ${esc(S.settings.coachName)} indique otra cosa en el ejercicio.</li>
         <li><b>Descansos:</b> 3–5 min en sentadilla, rumano, prensa, press, remo y jalón. 2–3 min en el resto.</li>
         <li><b>Progresión:</b> cuando todas las series llegan al tope del rango, se sube el peso lo mínimo y se vuelve al número bajo. La app te lo sugiere en cada ejercicio.</li>
         <li><b>Calentamiento:</b> 5 min suaves y series de aproximación en el primer ejercicio de cada grupo.</li>
@@ -678,7 +816,40 @@
     return { title: 'Instalar', back: '#/mas', html };
   }
 
+  function viewLogin() {
+    const html = `<form class="card form" id="login-form" novalidate><h2>Entrar</h2>
+        <p class="muted small">Con el correo y la contraseña que te dio ${esc(S.settings.coachName)}. Se hace una sola vez en este teléfono.</p>
+        <div class="q"><label for="lg-email">Correo</label><input class="inp" id="lg-email" type="email" autocomplete="username" inputmode="email" autocapitalize="off"></div>
+        <div class="q"><label for="lg-pass">Contraseña</label><input class="inp" id="lg-pass" type="password" autocomplete="current-password"></div>
+        <button class="btn block" type="submit" id="lg-btn">Entrar</button></form>`;
+    return { title: 'Plan Paola', bare: true, html };
+  }
+
+  function viewNotLinked() {
+    const html = `<section class="card"><h3>Esta cuenta no es de atleta</h3>
+        <p class="muted">Entraste con ${esc(user && user.email)}, que no está conectada como atleta. Si eres ${esc(S.settings.coachName)}, usa la app de coach.</p>
+        <button class="btn block ghost" data-a="logout">Cerrar sesión</button></section>`;
+    return { title: 'Plan Paola', bare: true, html };
+  }
+
+  function viewCuenta() {
+    const labels = { ok: 'Todo enviado', syncing: 'Sincronizando…', offline: 'Sin internet: se envía al volver la conexión', error: 'No se pudo sincronizar', idle: 'Pendiente' };
+    const pend = pendingCount();
+    const html = `<section class="card"><h3>Conexión con ${esc(S.settings.coachName)}</h3>
+        <p class="muted small">Entraste como ${esc(user && user.email)}.</p>
+        <div class="stats">
+          <div class="stat"><span class="k">Estado</span><span class="v" style="font-size:1.1rem">${labels[syncInfo.state] || ''}</span></div>
+          <div class="stat"><span class="k">Última vez</span><span class="v" style="font-size:1.1rem">${syncInfo.at ? new Date(syncInfo.at).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }) : '—'}</span><span class="s">${pend ? pend + ' pendientes' : 'nada pendiente'}</span></div>
+        </div>
+        ${syncInfo.state === 'error' ? `<p class="small" style="color:var(--danger)">${esc(syncInfo.error)}</p>` : ''}
+        <button class="btn block" data-a="sync-now">Sincronizar ahora</button></section>
+      <section class="card"><h3>Ajustes del plan</h3><p class="muted small">La fecha de inicio, las calorías, las cargas, el RIR y las variantes del hombro los maneja ${esc(S.settings.coachName)} desde su app.</p></section>
+      <button class="btn block danger" data-a="logout">Cerrar sesión</button>`;
+    return { title: 'Cuenta', back: '#/mas', html };
+  }
+
   function viewCoach() {
+    if (sb) return viewCuenta();
     const pinSet = !!S.settings.coachPin;
     if (!coachUnlocked) {
       const html = `<section class="card form"><h3>${pinSet ? 'Ingresa el PIN de coach' : 'Crea el PIN de coach'}</h3>
@@ -717,7 +888,7 @@
 
   // ---------- Render ----------
   const TABS = [['entrenar', 'Entrenar'], ['nutricion', 'Nutrición'], ['checkin', 'Check-in'], ['mas', 'Más']];
-  const TAB_OF = { entrenar: 'entrenar', workout: 'entrenar', session: 'entrenar', historial: 'entrenar', nutricion: 'nutricion', checkin: 'checkin', mas: 'mas', plan: 'mas', medidas: 'mas', respaldo: 'mas', instalar: 'mas', coach: 'mas' };
+  const TAB_OF = { entrenar: 'entrenar', workout: 'entrenar', session: 'entrenar', historial: 'entrenar', nutricion: 'nutricion', checkin: 'checkin', mas: 'mas', plan: 'mas', medidas: 'mas', respaldo: 'mas', instalar: 'mas', coach: 'mas', cuenta: 'mas' };
   let lastRoute = null;
 
   function current() {
@@ -729,7 +900,10 @@
   function render() {
     const { name, arg, key } = current();
     let v;
-    switch (name) {
+    if (!authReady) v = { title: 'Plan Paola', bare: true, html: '<p class="muted">Cargando…</p>' };
+    else if (sb && !user) v = viewLogin();
+    else if (sb && notLinked) v = viewNotLinked();
+    else switch (name) {
       case 'entrenar': v = viewEntrenar(); break;
       case 'workout': v = viewWorkout(arg); break;
       case 'session': v = viewSession(arg); break;
@@ -742,13 +916,15 @@
       case 'respaldo': v = viewRespaldo(); break;
       case 'instalar': v = viewInstalar(); break;
       case 'coach': v = viewCoach(); break;
+      case 'cuenta': v = sb ? viewCuenta() : viewCoach(); break;
       default: v = viewNotFound();
     }
     document.getElementById('hdr').innerHTML = `${v.back ? `<a class="back" href="${v.back}">‹ Volver</a>` : ''}<span class="title">${esc(v.title)}</span>${v.pill || ''}`;
     document.getElementById('view').innerHTML = v.html;
     const tab = TAB_OF[name] || 'entrenar';
     const pending = !dayComplete(S.checkins[today()]);
-    document.getElementById('tabs').innerHTML = TABS.map(([id, label]) => `<a href="#/${id}" class="${tab === id ? 'on' : ''}" ${tab === id ? 'aria-current="page"' : ''}>${ICONS[id]}<span>${label}</span>${id === 'checkin' && pending ? '<span class="dot" aria-label="pendiente"></span>' : ''}</a>`).join('');
+    document.getElementById('tabs').hidden = !!v.bare;
+    document.getElementById('tabs').innerHTML = v.bare ? '' : TABS.map(([id, label]) => `<a href="#/${id}" class="${tab === id ? 'on' : ''}" ${tab === id ? 'aria-current="page"' : ''}>${ICONS[id]}<span>${label}</span>${id === 'checkin' && pending ? '<span class="dot" aria-label="pendiente"></span>' : ''}</a>`).join('');
     document.title = `${v.title} · Plan Paola`;
     if (key !== lastRoute) { window.scrollTo(0, 0); lastRoute = key; }
     renderTimer();
@@ -846,6 +1022,7 @@
       S.sessions.push(s);
       S.active = null;
       save(); closeSheet();
+      markDirty('session', s.id);
       location.hash = '#/session/' + s.id;
       toast('Entrenamiento guardado');
     },
@@ -855,7 +1032,7 @@
     },
     'delete-session': el => {
       if (el.dataset.confirm !== '1') { el.dataset.confirm = '1'; el.textContent = 'Toca otra vez para eliminar'; return; }
-      S.sessions = S.sessions.filter(s => s.id !== el.dataset.id); save(); location.hash = '#/historial'; toast('Entrenamiento eliminado');
+      S.sessions = S.sessions.filter(s => s.id !== el.dataset.id); save(); markDeleted('session', el.dataset.id); location.hash = '#/historial'; toast('Entrenamiento eliminado');
     },
     'share-session': el => { const s = S.sessions.find(x => x.id === el.dataset.id); if (s) shareText(sessionText(s), 'Entrenamiento de Paola'); },
     'nut-day': el => { const d = el.dataset.d; location.hash = '#/nutricion' + (d === today() ? '' : '/' + d); },
@@ -865,14 +1042,14 @@
       const day = S.food[date] = S.food[date] || { on: [], water: 0 };
       const id = el.dataset.id;
       day.on = day.on.includes(id) ? day.on.filter(x => x !== id) : day.on.concat(id);
-      save(); render();
+      save(); markDirty('food', date); render();
     },
     water: el => {
       const { name, arg } = current();
       const date = (name === 'nutricion' && arg) || today();
       const day = S.food[date] = S.food[date] || { on: [], water: 0 };
       day.water = Math.max(0, (day.water || 0) + Number(el.dataset.v));
-      save(); render();
+      save(); markDirty('food', date); render();
     },
     eq: el => {
       const g = EQUIVALENTS[el.dataset.g]; if (!g) return;
@@ -883,7 +1060,7 @@
       const c = S.checkins[date] = S.checkins[date] || {};
       if (k === 'noPeso') { c.noPeso = v === '1'; if (c.noPeso) c.peso = ''; }
       else c[k] = String(c[k]) === v ? '' : v;
-      save(); render();
+      save(); markDirty('checkin', date); render();
     },
     'ci-week': el => { const d = el.dataset.d; location.hash = d === mondayOf(today()) ? '#/checkin' : '#/checkin/w' + d; },
     'send-week': el => {
@@ -894,12 +1071,13 @@
       const date = document.getElementById('m-date').value || today();
       const cintura = num(document.getElementById('m-cin').value), cadera = num(document.getElementById('m-cad').value);
       if (!cintura && !cadera) { toast('Anota al menos una medida'); return; }
-      S.measures.push({ id: 'm' + Date.now(), date, cintura, cadera });
-      save(); render(); toast('Medición guardada');
+      const m = { id: 'm' + Date.now(), date, cintura, cadera };
+      S.measures.push(m);
+      save(); markDirty('measure', m.id); render(); toast('Medición guardada');
     },
     'del-measure': el => {
       if (el.dataset.confirm !== '1') { el.dataset.confirm = '1'; el.textContent = '¿Seguro?'; return; }
-      S.measures = S.measures.filter(m => m.id !== el.dataset.id); save(); render();
+      S.measures = S.measures.filter(m => m.id !== el.dataset.id); save(); markDeleted('measure', el.dataset.id); render();
     },
     export: async () => {
       const json = JSON.stringify(Object.assign({}, S, { exportedAt: new Date().toISOString() }));
@@ -925,9 +1103,38 @@
     swap: el => { const id = el.dataset.id; if (S.swaps[id]) delete S.swaps[id]; else S.swaps[id] = true; save(); render(); },
     'import-confirm': () => {
       if (!pendingImport) return;
-      S = hydrate(pendingImport); pendingImport = null; save(); closeSheet(); location.hash = '#/entrenar'; render(); toast('Respaldo recuperado');
+      S = hydrate(pendingImport); pendingImport = null; S.deletes = []; markAllDirty(); schedulePush();
+      closeSheet(); location.hash = '#/entrenar'; render(); toast('Respaldo recuperado');
+    },
+    'sync-now': () => { sync(); toast('Sincronizando…'); },
+    logout: async el => {
+      if (el.dataset.confirm !== '1') { el.dataset.confirm = '1'; el.textContent = 'Toca otra vez para cerrar sesión'; return; }
+      try { await sb.auth.signOut(); } catch (e) { /* se cierra igual en este teléfono */ }
+      user = null; notLinked = false; location.hash = '#/entrenar'; render();
     }
   };
+
+  async function login() {
+    const email = document.getElementById('lg-email').value.trim();
+    const password = document.getElementById('lg-pass').value;
+    if (!email || !password) { toast('Escribe tu correo y tu contraseña'); return; }
+    const btn = document.getElementById('lg-btn');
+    btn.disabled = true; btn.textContent = 'Entrando…';
+    const { data, error } = await sb.auth.signInWithPassword({ email, password });
+    if (error) {
+      btn.disabled = false; btn.textContent = 'Entrar';
+      toast(navigator.onLine ? 'Correo o contraseña incorrectos' : 'Necesitas internet para entrar');
+      return;
+    }
+    user = data.user;
+    if (S.syncedUser !== user.id) { S.syncedUser = user.id; markAllDirty(); }
+    await sync();
+    location.hash = '#/entrenar';
+    render();
+  }
+  document.addEventListener('submit', e => {
+    if (e.target.id === 'login-form') { e.preventDefault(); login(); }
+  });
 
   function openFinishSheet() {
     const p = S.active.post || {};
@@ -963,7 +1170,7 @@
     } else if (t.dataset.ci) {
       const c = S.checkins[t.dataset.d] = S.checkins[t.dataset.d] || {};
       c[t.dataset.ci] = t.value.trim ? (t.dataset.ci === 'nota' ? t.value : t.value.trim()) : t.value;
-      save();
+      save(); markDirty('checkin', t.dataset.d);
     } else if (t.dataset.kcal) {
       const v = num(t.value); if (v && v >= 1000 && v <= 3000) { S.settings.kcal[t.dataset.kcal] = Math.round(v); save(); }
     } else if (t.dataset.coachname) {
@@ -997,8 +1204,14 @@
   });
 
   window.addEventListener('hashchange', render);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) render(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    render();
+    if (!syncInfo.at || Date.now() - syncInfo.at > 60000) sync();
+  });
+  window.addEventListener('online', () => sync());
   render();
+  initAuth();
 
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('sw.js').catch(() => { /* sin modo offline */ });

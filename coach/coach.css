@@ -1,0 +1,47 @@
+/* App de coach: usa los tokens de ../styles.css. Más ancha en pantallas grandes para la planilla. */
+body.coach.wide main { max-width: 1100px; }
+body.coach .tabbar { grid-template-columns: repeat(5, 1fr); }
+body.coach .tabbar a.on::before { background: var(--upper); }
+body.coach .tabbar a.on { color: var(--upper); }
+.app-header .reload { border: 1px solid var(--line); background: var(--surface); border-radius: 10px; min-height: 36px; padding: 0 12px; font-weight: 700; font-size: 0.85rem; color: var(--upper); }
+
+.navbtn { width: 44px; height: 44px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); font-size: 1.3rem; display: flex; align-items: center; justify-content: center; text-decoration: none; color: var(--ink); }
+.daynav .dl { line-height: 1.25; }
+
+/* Editor de la semana */
+.pr-card { border-left: 5px solid var(--c, var(--lower)); }
+.pr-card.lower { --c: var(--lower); }
+.pr-card.upper { --c: var(--upper); }
+.pr-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 16px; }
+.pr-row { display: grid; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); }
+.pr-name { display: flex; flex-direction: column; gap: 2px; }
+.pr-last .up { color: var(--ok); font-weight: 700; }
+.pr-inputs { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.pr-inputs .field.kg { width: 120px; flex: none; }
+.rirs { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+.rirs button { min-width: 48px; min-height: 44px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface-2); font-weight: 700; font-variant-numeric: tabular-nums; }
+.rirs button.on { background: var(--upper); border-color: var(--upper); color: var(--on-accent); }
+.rir-in { width: 72px; height: 44px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface-2); padding: 0 8px; font-weight: 700; text-align: center; font-size: 1rem; }
+.rir-in.bad { border-color: var(--danger); color: var(--danger); }
+.note-in { height: 40px; font-size: 0.95rem; }
+.sendbar { position: sticky; bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom, 0px) + 8px); z-index: 5; }
+.sendbar .btn { box-shadow: 0 6px 18px rgba(11, 61, 145, 0.25); }
+
+/* Planilla */
+.seg-links { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
+.seg-links a { flex: none; min-height: 40px; padding: 0 14px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); display: flex; align-items: center; text-decoration: none; color: var(--ink); font-weight: 700; font-size: 0.9rem; }
+.seg-links a.on { background: var(--upper); border-color: var(--upper); color: var(--on-accent); }
+.sheet-scroll { overflow-x: auto; }
+table.sheet { border-collapse: separate; border-spacing: 0; font-size: 0.84rem; min-width: 100%; }
+table.sheet th, table.sheet td { padding: 8px 10px; border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); vertical-align: top; text-align: left; white-space: nowrap; }
+table.sheet thead th, table.sheet tr:first-child th { background: var(--surface-2); }
+table.sheet th a { color: var(--upper); text-decoration: none; }
+table.sheet .stick { position: sticky; left: 0; z-index: 1; background: var(--surface); min-width: 150px; max-width: 190px; white-space: normal; font-size: 0.82rem; text-transform: none; letter-spacing: 0; color: var(--ink); }
+table.sheet td { min-width: 104px; }
+table.sheet .cur { background: #F3F7FF; }
+table.sheet .pres { display: block; font-size: 0.74rem; color: var(--upper); font-weight: 700; }
+table.sheet .pres.draft { color: var(--muted); font-style: italic; }
+table.sheet .act { display: block; font-weight: 700; font-variant-numeric: tabular-nums; }
+table.sheet td.top { background: var(--ok-soft); }
+table.sheet td.msg { box-shadow: inset 3px 0 0 var(--upper); }
+tr.note-row td { color: var(--muted); font-size: 0.85rem; padding-top: 0; }

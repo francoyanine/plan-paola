@@ -1,7 +1,7 @@
 'use strict';
 // Red primero para los archivos de la app (así llegan las actualizaciones) y caché como respaldo sin internet.
-const CACHE = 'plan-paola-v6';
-const SHELL = ['./', 'index.html', 'styles.css', 'data.js', 'app.js', 'manifest.webmanifest',
+const CACHE = 'plan-paola-v7';
+const SHELL = ['./', 'index.html', 'styles.css', 'config.js', 'data.js', 'core.js', 'app.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 
 self.addEventListener('install', e => {
@@ -18,7 +18,7 @@ self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
-  if (url.hostname === 'fonts.googleapis.com' || url.hostname === 'fonts.gstatic.com') {
+  if (url.hostname === 'fonts.googleapis.com' || url.hostname === 'fonts.gstatic.com' || url.hostname === 'cdn.jsdelivr.net') {
     e.respondWith(caches.match(req).then(hit => hit || fetch(req).then(res => {
       const copy = res.clone();
       caches.open(CACHE).then(c => c.put(req, copy));
@@ -26,9 +26,10 @@ self.addEventListener('fetch', e => {
     })));
     return;
   }
+  // Supabase (datos y login) siempre va directo a la red.
   if (url.origin !== location.origin) return;
   e.respondWith(fetch(req).then(res => {
     if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(req, copy)); }
     return res;
-  }).catch(() => caches.match(req).then(hit => hit || caches.match('index.html'))));
+  }).catch(() => caches.match(req).then(hit => hit || caches.match(url.pathname.includes('/coach/') ? 'coach/index.html' : 'index.html'))));
 });
