@@ -23,10 +23,10 @@ create table public.plan_weeks (
   primary key (athlete_id, week)
 );
 
--- Todo lo que registra la atleta. kind: session | checkin | food | measure. key: id de sesión o fecha.
+-- Todo lo que registra la atleta. kind: session | checkin | food | measure | customfood. key: id o fecha.
 create table public.records (
   athlete_id uuid not null references public.athletes (id) on delete cascade,
-  kind text not null check (kind in ('session', 'checkin', 'food', 'measure')),
+  kind text not null check (kind in ('session', 'checkin', 'food', 'measure', 'customfood')),
   key text not null,
   data jsonb not null,
   updated_at timestamptz not null default now(),

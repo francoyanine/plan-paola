@@ -114,9 +114,43 @@
     return map;
   }
 
+  // Deslizar hacia abajo desde el tope de la pantalla para actualizar. Las apps instaladas en iPhone no lo traen.
+  function pullToRefresh(onRefresh) {
+    const el = document.createElement('div');
+    el.className = 'ptr';
+    el.hidden = true;
+    el.setAttribute('role', 'status');
+    document.body.appendChild(el);
+    const READY = 70;
+    let y0 = null, dist = 0, busy = false;
+    const reset = () => { el.style.transform = ''; el.classList.remove('ready'); el.hidden = true; dist = 0; };
+    document.addEventListener('touchstart', e => {
+      const ok = !busy && window.scrollY <= 0 && e.touches.length === 1 && !document.querySelector('.sheet-wrap');
+      y0 = ok ? e.touches[0].clientY : null;
+    }, { passive: true });
+    document.addEventListener('touchmove', e => {
+      if (y0 === null) return;
+      const dy = e.touches[0].clientY - y0;
+      if (dy <= 0 || window.scrollY > 0) { reset(); return; }
+      dist = Math.min(110, dy * 0.55);
+      el.hidden = false;
+      el.style.transform = `translate(-50%, ${dist}px)`;
+      el.classList.toggle('ready', dist >= READY);
+      el.textContent = dist >= READY ? 'Suelta para actualizar' : 'Desliza para actualizar';
+    }, { passive: true });
+    document.addEventListener('touchend', async () => {
+      if (y0 === null) return;
+      y0 = null;
+      if (dist < READY) { reset(); return; }
+      busy = true;
+      el.textContent = 'Actualizando…';
+      try { await onRefresh(); } finally { busy = false; reset(); }
+    });
+  }
+
   window.CORE = {
     DOW, DOW_LONG, MONTHS, pad, ymd, parse, today, addDays, dowIdx, mondayOf, daysBetween, fmtDay, fmtShort, nf, num, esc, avg,
     blockFor, weekStart, RIR_SCHEMES, parseRir, defaultScheme, rirForSet, rirList,
-    resolveEx, isBodyweight, findExercise, setText, setsText, lastPerfIn, autoSuggest, scheduleFor
+    resolveEx, isBodyweight, findExercise, setText, setsText, lastPerfIn, autoSuggest, scheduleFor, pullToRefresh
   };
 })();

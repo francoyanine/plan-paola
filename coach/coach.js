@@ -105,14 +105,17 @@
   }
   const editing = {};
   let draftTimer = null;
+  let draftWeek = null;
   function editDraft(w, fn) {
     if (!editing[w]) editing[w] = draftOf(w);
     fn(editing[w]);
     weeks[w] = Object.assign({ week: w, published: null, published_at: null }, weeks[w], { draft: clone(editing[w]) });
     clearTimeout(draftTimer);
+    draftWeek = w;
     draftTimer = setTimeout(() => saveDraft(w), 700);
   }
   async function saveDraft(w) {
+    if (draftWeek === w) { clearTimeout(draftTimer); draftWeek = null; }
     const { error } = await sb.from('plan_weeks').upsert({ athlete_id: A.id, week: w, draft: weeks[w].draft, updated_at: new Date().toISOString() });
     const el = document.getElementById('draft-state');
     if (error) { toast('No se pudo guardar el borrador: ' + error.message); return; }
@@ -608,6 +611,11 @@
     render();
     if (user) loadAll();
   })();
+
+  C.pullToRefresh(async () => {
+    if (draftWeek !== null) await saveDraft(draftWeek);
+    location.reload();
+  });
 
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('../sw.js', { scope: '../' }).catch(() => { /* sin modo offline */ });

@@ -1,7 +1,7 @@
 'use strict';
 // Red primero para los archivos de la app (así llegan las actualizaciones) y caché como respaldo sin internet.
-const CACHE = 'plan-paola-v10';
-const SHELL = ['./', 'index.html', 'styles.css', 'config.js', 'data.js', 'core.js', 'app.js', 'manifest.webmanifest',
+const CACHE = 'plan-paola-v11';
+const SHELL = ['./', 'index.html', 'styles.css', 'config.js', 'foods.js', 'data.js', 'core.js', 'app.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 
 self.addEventListener('install', e => {

@@ -1,7 +1,8 @@
 'use strict';
 
 (function () {
-  const { ROUTINES, ROUTINE_ORDER, PHASES, MEALS, EQUIVALENTS, NUTRITION_TIPS } = window.DATA;
+  const { ROUTINES, ROUTINE_ORDER, PHASES, MEALS, NUTRITION_TIPS } = window.DATA;
+  const FOODS = window.FOODS || [];
   const KEY = 'plan-paola-v1';
   const DOW = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
   const DOW_LONG = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
@@ -30,7 +31,7 @@
       v: 1,
       settings: { startDate: mondayOf(today()), upperDay: 'mar', coachName: 'Franco', coachPin: '', kcal: { recomp: 1800, cut: 1500 }, hideInstall: false },
       swaps: {}, sessions: [], active: null, checkins: {}, food: {}, measures: [], sent: {},
-      plan: {}, dirty: {}, deletes: [], syncedUser: null
+      plan: {}, dirty: {}, deletes: [], syncedUser: null, myFoods: [], recentFoods: []
     };
   }
   function hydrate(s) {
@@ -69,12 +70,15 @@
   S.dirty = S.dirty || {};
   S.deletes = S.deletes || [];
   S.plan = S.plan || {};
+  S.myFoods = S.myFoods || [];
+  S.recentFoods = S.recentFoods || [];
 
   function recordData(kind, key) {
     if (kind === 'session') return S.sessions.find(x => x.id === key) || null;
     if (kind === 'checkin') return S.checkins[key] || null;
     if (kind === 'food') return S.food[key] || null;
     if (kind === 'measure') return S.measures.find(m => m.id === key) || null;
+    if (kind === 'customfood') return S.myFoods.find(f => f.id === key) || null;
     return null;
   }
   let pushTimer = null;
@@ -92,11 +96,12 @@
   }
   function markAllDirty() {
     if (!sb) return;
-    S.dirty = { session: {}, checkin: {}, food: {}, measure: {} };
+    S.dirty = { session: {}, checkin: {}, food: {}, measure: {}, customfood: {} };
     S.sessions.forEach(x => { S.dirty.session[x.id] = true; });
     Object.keys(S.checkins).forEach(d => { S.dirty.checkin[d] = true; });
     Object.keys(S.food).forEach(d => { S.dirty.food[d] = true; });
     S.measures.forEach(m => { S.dirty.measure[m.id] = true; });
+    S.myFoods.forEach(f => { S.dirty.customfood[f.id] = true; });
     save();
   }
   const pendingCount = () => Object.values(S.dirty).reduce((a, k) => a + Object.keys(k).length, 0) + S.deletes.length;
@@ -149,6 +154,7 @@
         else if (r.kind === 'checkin') S.checkins[r.key] = r.data;
         else if (r.kind === 'food') S.food[r.key] = r.data;
         else if (r.kind === 'measure') S.measures.push(r.data);
+        else if (r.kind === 'customfood' && !S.myFoods.some(f => f.id === r.key)) S.myFoods.push(r.data);
       });
     }
     save();
@@ -622,15 +628,54 @@
     return { title: 'Historial', back: '#/entrenar', html };
   }
 
-  function mealsFor(date) {
+  // ---------- Comidas: plan del día, cambios de alimento y alimentos extra ----------
+  const norm = x => String(x).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const r1 = n => Math.round(n * 10) / 10;
+  const fmtM = n => String(n >= 10 ? Math.round(n) : r1(n)).replace('.', ',');
+  // Macro que se iguala al cambiar un alimento según su grupo; el resto se iguala por calorías.
+  const MATCH = { carbo: 'c', fruta: 'c', proteina: 'p', lacteo: 'p', grasa: 'g' };
+  const MATCH_LABEL = { c: 'los carbohidratos', p: 'la proteína', g: 'la grasa', kcal: 'las calorías' };
+  const findFood = id => S.myFoods.find(f => f.id === id) || FOODS.find(f => f.id === id) || null;
+  const foodByName = n => FOODS.find(f => f.n === n) || S.myFoods.find(f => f.n === n) || null;
+  function portion(food, grams) {
+    const k = grams / 100;
+    return { kcal: Math.round(food.kcal * k), p: r1(food.p * k), g: r1(food.g * k), c: r1(food.c * k) };
+  }
+  function matchKey(target, food) {
+    const key = MATCH[target.cat] || 'kcal';
+    return target[key] > 0 && food[key] >= 2 ? key : 'kcal';
+  }
+  // Gramos del alimento nuevo que igualan al original en su macro principal.
+  function eqGrams(target, food) {
+    if (!(target.kcal > 0) || !(food.kcal > 0)) return food.u ? food.u[1] : 100;
+    const key = matchKey(target, food);
+    const g = target[key] / food[key] * 100;
+    const step = g < 30 ? 1 : 5;
+    return Math.max(1, Math.round(g / step) * step);
+  }
+
+  function foodDay(date) {
+    const d = S.food[date] = S.food[date] || { on: [], water: 0 };
+    d.swaps = d.swaps || {};
+    d.extra = d.extra || [];
+    return d;
+  }
+  function mealsFor(date, day) {
     const cut = block(date).phase === 'cut';
+    const swaps = (day && day.swaps) || {};
+    const extra = (day && day.extra) || [];
     return MEALS.map(m => ({
       id: m.id, name: m.name,
       foods: m.foods.map(f => {
-        if (!cut || f.cut === undefined) return f;
-        if (f.cut === null) return null;
-        return Object.assign({}, f, f.cut, { swapped: true });
-      }).filter(Boolean)
+        let base = f;
+        if (cut && f.cut !== undefined) {
+          if (f.cut === null) return null;
+          base = Object.assign({}, f, f.cut, { cutPortion: true });
+        }
+        const sw = swaps[f.id];
+        if (!sw) return base;
+        return Object.assign({}, base, { name: sw.n, qty: `${fmtM(sw.grams)} g`, kcal: sw.kcal, p: sw.p, g: sw.g, c: sw.c, estimate: false, free: false, fixed: false, swappedFrom: base.name, plan: base });
+      }).filter(Boolean).concat(extra.filter(x => x.meal === m.id).map(x => ({ id: x.id, name: x.n, qty: `${fmtM(x.grams)} g`, kcal: x.kcal, p: x.p, g: x.g, c: x.c, extra: true })))
     }));
   }
 
@@ -638,11 +683,13 @@
     const date = dateArg || today();
     const tg = targets(date);
     const day = S.food[date] || { on: [], water: 0 };
-    const meals = mealsFor(date);
+    const meals = mealsFor(date, day);
+    const eaten = f => f.extra || day.on.includes(f.id);
     let kcal = 0, prot = 0, fat = 0, carb = 0;
-    meals.forEach(m => m.foods.forEach(f => { if (day.on.includes(f.id)) { kcal += f.kcal; prot += f.p; fat += f.g || 0; carb += f.c || 0; } }));
+    meals.forEach(m => m.foods.forEach(f => { if (eaten(f)) { kcal += f.kcal; prot += f.p; fat += f.g || 0; carb += f.c || 0; } }));
+    [prot, fat, carb] = [prot, fat, carb].map(Math.round);
     const bar = (label, v, goal) => `<div class="bar"><div class="top"><span>${label}</span><b>${v} / ${goal} g</b></div><div class="track"><span style="width:${Math.min(100, v / goal * 100)}%"></span></div></div>`;
-    const planKcal = meals.reduce((a, m) => a + m.foods.reduce((b, f) => b + f.kcal, 0), 0);
+    const planKcal = meals.reduce((a, m) => a + m.foods.filter(f => !f.extra).reduce((b, f) => b + f.kcal, 0), 0);
     const C = 2 * Math.PI * 48;
     const frac = Math.min(1, kcal / tg.kcal);
     const label = date === today() ? 'Hoy' : (date === addDays(today(), -1) ? 'Ayer' : fmtDay(date));
@@ -656,7 +703,7 @@
           ${bar('Proteína', prot, tg.p)}${bar('Grasa', fat, tg.g)}${bar('Carbos', carb, tg.c)}
         </div>
       </div>
-      <p class="small muted">Plan del día: ≈${nf(planKcal, 0)} kcal. Marca cada alimento cuando lo comas.</p>
+      <p class="small muted">Plan del día: ≈${nf(planKcal, 0)} kcal. Marca cada alimento cuando lo comas. Toca su nombre para cambiarlo por otro.</p>
     </section>`);
     parts.push(`<section class="card"><div class="card-head"><h3>Agua</h3><span class="small muted">meta 2 L</span></div>
       <div class="water"><span class="wv">${nf(day.water / 1000, 2)} L</span>
@@ -666,17 +713,115 @@
     meals.forEach(m => {
       const mk = m.foods.reduce((a, f) => a + f.kcal, 0);
       const foods = m.foods.map(f => {
-        const on = day.on.includes(f.id);
-        return `<div class="food ${on ? 'on' : ''}"><button class="tick" data-a="food" data-id="${f.id}" aria-pressed="${on}" aria-label="Marcar ${esc(f.name)}">✓</button>
-          <div style="min-width:0"><div class="fname">${esc(f.name)}</div><div class="fq">${esc(f.qty)}</div>
-          ${f.swapped ? '<div class="cut-note">Porción de mini cut</div>' : ''}${f.fixed ? '<div class="fixed-note">Fijo</div>' : ''}
-          ${f.eq ? `<button class="eqb" data-a="eq" data-g="${f.eq}">Equivalencias</button>` : ''}</div>
-          <div class="fk">${f.free ? '<b>libre</b>no se cuenta' : `<b>${f.estimate ? '≈' : ''}${f.kcal}</b>kcal${f.estimate ? '<br>por confirmar' : `<br>P ${f.p} · G ${f.g} · C ${f.c}`}`}</div></div>`;
+        const on = eaten(f);
+        const tick = f.extra
+          ? `<span class="tick on" aria-hidden="true">✓</span>`
+          : `<button class="tick" data-a="food" data-id="${f.id}" aria-pressed="${on}" aria-label="Marcar ${esc(f.name)}">✓</button>`;
+        const nameEl = f.free || f.extra
+          ? `<div class="fname">${esc(f.name)}</div>`
+          : `<button class="fname" data-a="swap-food" data-id="${f.id}">${esc(f.name)}</button>`;
+        const notes = [
+          f.cutPortion && !f.swappedFrom ? '<div class="cut-note">Porción de mini cut</div>' : '',
+          f.fixed ? '<div class="fixed-note">Fijo</div>' : '',
+          f.swappedFrom ? `<div class="swap-note">En vez de ${esc(f.swappedFrom)} · <button class="linkbtn small" data-a="unswap" data-id="${f.id}">volver al original</button></div>` : '',
+          f.extra ? `<div class="swap-note">Agregado · <button class="linkbtn small" data-a="del-extra" data-id="${f.id}">quitar</button></div>` : ''
+        ].join('');
+        return `<div class="food ${on ? 'on' : ''}">${tick}
+          <div style="min-width:0">${nameEl}<div class="fq">${esc(f.qty)}</div>${notes}</div>
+          <div class="fk">${f.free ? '<b>libre</b>no se cuenta' : `<b>${f.estimate ? '≈' : ''}${f.kcal}</b>kcal${f.estimate ? '<br>por confirmar' : `<br>P ${fmtM(f.p)} · G ${fmtM(f.g)} · C ${fmtM(f.c)}`}`}</div></div>`;
       }).join('');
-      parts.push(`<section class="card flush"><div class="meal-head"><h3>${esc(m.name)}</h3><span class="mk">${mk} kcal</span></div>${foods}</section>`);
+      parts.push(`<section class="card flush"><div class="meal-head"><h3>${esc(m.name)}</h3><span class="mk">${mk} kcal</span></div>${foods}
+        <button class="addfood" data-a="add-food" data-meal="${m.id}">+ Agregar alimento</button></section>`);
     });
     parts.push(`<section class="card"><h3>Indicaciones</h3><ul class="tips">${NUTRITION_TIPS.map(t => `<li>${esc(t)}</li>`).join('')}</ul></section>`);
     return { title: 'Nutrición', html: parts.join(''), pill: phasePill(date) };
+  }
+
+  // Selector de alimentos (hoja inferior): equivalentes, búsqueda, cantidad y alimentos propios.
+  let picker = null;
+  const nutDate = () => { const { name, arg } = current(); return (name === 'nutricion' && arg) || today(); };
+  function searchFoods(q) {
+    const qn = norm(q.trim());
+    if (!qn) {
+      const recent = S.recentFoods.map(findFood).filter(f => f && !S.myFoods.includes(f));
+      return S.myFoods.slice().reverse().concat(recent).slice(0, 15);
+    }
+    const words = qn.split(/\s+/);
+    return S.myFoods.concat(FOODS)
+      .filter(f => { const n = norm(f.n); return words.every(w => n.includes(w)); })
+      .sort((a, b) => (Number(norm(b.n).startsWith(qn)) - Number(norm(a.n).startsWith(qn))) || a.n.localeCompare(b.n, 'es'))
+      .slice(0, 40);
+  }
+  function fpItem(f) {
+    const t = picker.target;
+    let right = `<b>${f.kcal}</b>kcal/100 g`;
+    if (t) { const g = eqGrams(t, f); right = `<b>${fmtM(g)} g</b>${portion(f, g).kcal} kcal`; }
+    const mine = S.myFoods.includes(f);
+    return `<button class="fp-item" data-a="fp-pick" data-fid="${esc(f.id)}"><span class="grow"><span class="t">${esc(f.n)}</span>
+      <span class="s">${mine ? 'Mi alimento · ' : ''}por 100 g: P ${fmtM(f.p)} · G ${fmtM(f.g)} · C ${fmtM(f.c)}${f.src && !mine ? ' · ' + esc(f.src) : ''}</span></span><span class="r">${right}</span></button>`;
+  }
+  function resultsHtml(q) {
+    const list = searchFoods(q);
+    if (!list.length) return q.trim() ? `<p class="muted small">No encontré «${esc(q)}». Créalo con la información de su etiqueta.</p>` : `<p class="muted small">Escribe para buscar entre ${FOODS.length} alimentos. Los que uses o crees aparecen aquí.</p>`;
+    return (q.trim() ? '' : '<div class="eyebrow">Mis alimentos y recientes</div>') + list.map(fpItem).join('');
+  }
+  function renderPicker() {
+    const p = picker;
+    if (p.step === 'amount') return renderAmount();
+    if (p.step === 'create') return renderCreate();
+    const t = p.target;
+    const meal = MEALS.find(m => m.id === p.meal);
+    const head = t
+      ? `<h2>Cambiar ${esc(t.name)}</h2><p class="muted small">En el plan: ${esc(t.qty)} · ${t.kcal} kcal. Las cantidades sugeridas igualan ${MATCH_LABEL[MATCH[t.cat] || 'kcal']}.</p>`
+      : `<h2>Agregar a ${esc(meal ? meal.name.toLowerCase() : 'la comida')}</h2>`;
+    const sugg = t ? (t.alts || []).map(foodByName).filter(Boolean) : [];
+    openSheet(`${head}
+      ${sugg.length ? `<div class="eyebrow">Equivalentes</div><div class="fp-list">${sugg.map(fpItem).join('')}</div>` : ''}
+      <label class="eyebrow" for="fp-q">Buscar alimento</label>
+      <input class="inp" id="fp-q" type="search" placeholder="Ej.: marraqueta, yogur, pollo" autocomplete="off" value="${esc(p.q || '')}">
+      <div class="fp-list" id="fp-results">${resultsHtml(p.q || '')}</div>
+      <button class="btn block ghost" data-a="fp-create">+ Crear alimento</button>
+      <button class="btn block ghost" data-a="close">Cancelar</button>`);
+  }
+  function amountTotals() {
+    const p = picker, f = p.sel, g = num(p.grams) || 0;
+    const q = portion(f, g);
+    let html = `<b>${q.kcal} kcal</b> · P ${fmtM(q.p)} g · G ${fmtM(q.g)} g · C ${fmtM(q.c)} g`;
+    if (p.target && p.target.kcal > 0) {
+      const d = q.kcal - p.target.kcal;
+      html += `<br><span class="muted">Plan: ${p.target.kcal} kcal · P ${fmtM(p.target.p)} · G ${fmtM(p.target.g)} · C ${fmtM(p.target.c)} (${d >= 0 ? '+' : ''}${d} kcal)</span>`;
+    }
+    return html;
+  }
+  function renderAmount() {
+    const p = picker, f = p.sel;
+    const opts = [];
+    if (p.target) opts.push(['Equivalente', eqGrams(p.target, f)]);
+    if (f.u) {
+      const unit = f.u[0].replace(/^1 /, '');
+      opts.push([f.u[0], f.u[1]], ['½ ' + unit, r1(f.u[1] / 2)], ['2 × ' + unit, f.u[1] * 2]);
+    }
+    opts.push(['', 100]);
+    openSheet(`<h2>${esc(f.n)}</h2>
+      <p class="muted small">Por 100 g: ${f.kcal} kcal · P ${fmtM(f.p)} · G ${fmtM(f.g)} · C ${fmtM(f.c)}${f.src ? ' · ' + esc(f.src) : ''}</p>
+      <div class="q"><label for="fp-g">¿Cuántos gramos comiste?</label><div class="inp-u"><input class="inp" id="fp-g" inputmode="decimal" autocomplete="off" value="${esc(String(p.grams).replace('.', ','))}"><span class="u">g</span></div></div>
+      <div class="chipsel">${opts.map(([l, g]) => `<button type="button" data-a="fp-g" data-v="${g}">${l ? esc(l) + ' ' : ''}<span class="${l ? 'muted' : ''}">${fmtM(g)} g</span></button>`).join('')}</div>
+      <p class="fp-tot" id="fp-tot">${amountTotals()}</p>
+      <button class="btn block" data-a="fp-save">${p.target ? 'Guardar cambio' : 'Agregar'}</button>
+      <button class="btn block ghost" data-a="fp-back">Volver</button>`);
+  }
+  function renderCreate() {
+    const p = picker;
+    const field = (id, label, unit, val) => `<div class="q"><label for="${id}">${label}</label><div class="inp-u"><input class="inp" id="${id}" inputmode="decimal" autocomplete="off" value="${esc(val || '')}"><span class="u">${unit}</span></div></div>`;
+    openSheet(`<h2>Crear alimento</h2>
+      <p class="muted small">Copia la información nutricional de la etiqueta, la columna de 100 g. Queda guardado para la próxima vez.</p>
+      <div class="q"><label for="fc-n">Nombre</label><input class="inp" id="fc-n" autocomplete="off" value="${esc(p.q || '')}" placeholder="Ej.: Pan pita integral Ideal"></div>
+      <div class="two">${field('fc-kcal', 'Energía', 'kcal')}${field('fc-p', 'Proteínas', 'g')}</div>
+      <div class="two">${field('fc-g', 'Grasas totales', 'g')}${field('fc-c', 'H. de C. disponibles', 'g')}</div>
+      <p class="small muted">Opcional: una porción para elegirla rápido.</p>
+      <div class="two"><div class="q"><label for="fc-un">Porción</label><input class="inp" id="fc-un" autocomplete="off" placeholder="1 unidad"></div>${field('fc-ug', 'Gramos de la porción', 'g')}</div>
+      <button class="btn block" data-a="fc-save">Guardar alimento</button>
+      <button class="btn block ghost" data-a="fp-back">Volver</button>`);
   }
 
   function scaleButtons(field, from, to, value, date) {
@@ -1051,9 +1196,73 @@
       day.water = Math.max(0, (day.water || 0) + Number(el.dataset.v));
       save(); markDirty('food', date); render();
     },
-    eq: el => {
-      const g = EQUIVALENTS[el.dataset.g]; if (!g) return;
-      openSheet(`<h2>${esc(g.title)}</h2><p class="muted small">Cualquiera de estas opciones reemplaza a la otra.</p><ul>${g.items.map(i => `<li>${esc(i)}</li>`).join('')}</ul>${g.note ? `<p class="small muted">${esc(g.note)}</p>` : ''}<button class="btn block ghost" data-a="close">Cerrar</button>`);
+    'swap-food': el => {
+      const date = nutDate();
+      const day = S.food[date] || { on: [], water: 0 };
+      const f = mealsFor(date, day).flatMap(m => m.foods).find(x => x.id === el.dataset.id);
+      if (!f) return;
+      picker = { step: 'list', date, foodId: f.id, target: f.plan || f, q: '' };
+      renderPicker();
+    },
+    'add-food': el => { picker = { step: 'list', date: nutDate(), meal: el.dataset.meal, target: null, q: '' }; renderPicker(); },
+    'fp-pick': el => {
+      const f = findFood(el.dataset.fid); if (!f || !picker) return;
+      picker.sel = f;
+      picker.grams = picker.target ? eqGrams(picker.target, f) : (f.u ? f.u[1] : 100);
+      picker.step = 'amount';
+      renderPicker();
+    },
+    'fp-g': el => {
+      picker.grams = Number(el.dataset.v);
+      const inp = document.getElementById('fp-g'); if (inp) inp.value = String(picker.grams).replace('.', ',');
+      document.getElementById('fp-tot').innerHTML = amountTotals();
+    },
+    'fp-back': () => { picker.step = 'list'; renderPicker(); },
+    'fp-create': () => { picker.step = 'create'; renderPicker(); },
+    'fc-save': () => {
+      const v = id => document.getElementById(id).value.trim();
+      const n = v('fc-n');
+      const kcal = num(v('fc-kcal'));
+      if (!n) { toast('Escribe el nombre del alimento'); return; }
+      if (kcal === null || kcal < 0 || kcal > 950) { toast('Revisa las calorías por 100 g'); return; }
+      const macro = id => { const x = num(v(id)); return x === null ? 0 : Math.max(0, x); };
+      const f = { id: 'my' + Date.now(), n, cat: 'otros', kcal: Math.round(kcal), p: r1(macro('fc-p')), g: r1(macro('fc-g')), c: r1(macro('fc-c')), src: 'propio' };
+      const ug = num(v('fc-ug'));
+      if (ug && ug > 0) f.u = [v('fc-un') || '1 porción', r1(ug)];
+      S.myFoods.push(f);
+      save(); markDirty('customfood', f.id);
+      picker.sel = f;
+      picker.grams = picker.target ? eqGrams(picker.target, f) : (f.u ? f.u[1] : 100);
+      picker.step = 'amount';
+      renderPicker();
+      toast('Alimento guardado');
+    },
+    'fp-save': () => {
+      const p = picker; if (!p || !p.sel) return;
+      const g = num(p.grams);
+      if (!g || g <= 0 || g > 3000) { toast('Escribe cuántos gramos comiste'); return; }
+      const entry = Object.assign({ fid: p.sel.id, n: p.sel.n, grams: r1(g) }, portion(p.sel, g));
+      const day = foodDay(p.date);
+      if (p.target) {
+        day.swaps[p.foodId] = entry;
+        if (!day.on.includes(p.foodId)) day.on.push(p.foodId);
+      } else {
+        day.extra.push(Object.assign({ id: 'x' + Date.now(), meal: p.meal }, entry));
+      }
+      S.recentFoods = [p.sel.id].concat(S.recentFoods.filter(id => id !== p.sel.id)).slice(0, 12);
+      save(); markDirty('food', p.date);
+      closeSheet(); picker = null; render();
+      toast(p.target ? 'Cambio guardado' : 'Alimento agregado');
+    },
+    unswap: el => {
+      const date = nutDate(); const day = foodDay(date);
+      delete day.swaps[el.dataset.id];
+      save(); markDirty('food', date); render();
+    },
+    'del-extra': el => {
+      const date = nutDate(); const day = foodDay(date);
+      day.extra = day.extra.filter(x => x.id !== el.dataset.id);
+      save(); markDirty('food', date); render();
     },
     'ci-set': el => {
       const date = el.dataset.d, k = el.dataset.k, v = el.dataset.v;
@@ -1161,6 +1370,16 @@
 
   document.addEventListener('input', e => {
     const t = e.target;
+    if (t.id === 'fp-q' && picker) {
+      picker.q = t.value;
+      document.getElementById('fp-results').innerHTML = resultsHtml(t.value);
+      return;
+    }
+    if (t.id === 'fp-g' && picker) {
+      picker.grams = t.value;
+      document.getElementById('fp-tot').innerHTML = amountTotals();
+      return;
+    }
     if (t.dataset.set && S.active) {
       const [exId, i, field] = t.dataset.set.split(':');
       S.active.ex[exId].sets[Number(i)][field] = t.value.trim();
@@ -1212,6 +1431,10 @@
   window.addEventListener('online', () => sync());
   render();
   initAuth();
+  CORE.pullToRefresh(async () => {
+    if (sb && user) await sync();
+    location.reload();
+  });
 
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('sw.js').catch(() => { /* sin modo offline */ });

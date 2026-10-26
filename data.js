@@ -197,59 +197,61 @@ const PHASES = {
 
 // Día tipo. Valores por porción: kcal, p (proteína), g (grasa), c (carbohidratos disponibles).
 // fixed = no se toca en ninguna fase. cut: null = se saca en el mini cut; objeto = cambia la porción.
-// estimate = calorías estimadas, falta medir.
-const TORTILLA = { name: 'Tortilla siria multigrano Assanabel', qty: '1 unidad (65 g)', kcal: 178, p: 7, g: 2, c: 33, fixed: true };
+// estimate = calorías estimadas, falta medir. free = no se cuenta.
+// cat = grupo para calcular equivalencias (carbo y fruta por carbohidratos, proteína y lácteo por proteína,
+// grasa por grasa, otros por calorías). alts = reemplazos sugeridos, por nombre en foods.js.
+const PAN_ALTS = ['Marraqueta', 'Hallulla', 'Pan amasado', 'Pan de molde integral', 'Pan pita', 'Tortilla de harina (wrap)'];
+const TORTILLA = { name: 'Tortilla siria multigrano Assanabel', qty: '1 unidad (65 g)', kcal: 178, p: 7, g: 2, c: 33, fixed: true, cat: 'carbo', alts: PAN_ALTS };
 
 const MEALS = [
   {
     id: 'm1', name: 'Desayuno', foods: [
       Object.assign({ id: 'd2' }, TORTILLA),
-      { id: 'd1', name: 'Huevos enteros', qty: '3 unidades', kcal: 220, p: 19, g: 15, c: 1, fixed: true },
-      { id: 'd3', name: 'Queso Hulgo', qty: '1 lámina (20 g)', kcal: 71, p: 5, g: 6, c: 0, fixed: true },
-      { id: 'd5', name: 'Kéfir casero de leche entera', qty: '100 ml', kcal: 61, p: 3, g: 3, c: 5 },
-      { id: 'd6', name: 'Chía', qty: '1 cucharada (12 g)', kcal: 58, p: 2, g: 4, c: 1 }
+      { id: 'd1', name: 'Huevos enteros', qty: '3 unidades', kcal: 220, p: 19, g: 15, c: 1, fixed: true, cat: 'proteina',
+        alts: ['Huevo duro', 'Clara de huevo', 'Jamón de pavo', 'Quesillo'] },
+      { id: 'd3', name: 'Queso Hulgo', qty: '1 lámina (20 g)', kcal: 71, p: 5, g: 6, c: 0, fixed: true, cat: 'lacteo',
+        alts: ['Queso gauda o mantecoso', 'Queso chanco', 'Queso mozzarella light', 'Quesillo', 'Jamón de pavo'] },
+      { id: 'd5', name: 'Kéfir casero de leche entera', qty: '100 ml', kcal: 61, p: 3, g: 3, c: 5, cat: 'lacteo',
+        alts: ['Leche entera', 'Leche descremada', 'Yogur natural entero', 'Yogur griego natural descremado'] },
+      { id: 'd6', name: 'Chía', qty: '1 cucharada (12 g)', kcal: 58, p: 2, g: 4, c: 1, cat: 'grasa',
+        alts: ['Linaza', 'Almendras', 'Nueces'] }
     ]
   },
   {
     id: 'm2', name: 'Almuerzo', foods: [
-      { id: 'a1', name: 'Pechuga de pollo cocida', qty: '120 g', kcal: 198, p: 37, g: 4, c: 0, eq: 'proteina' },
-      { id: 'a2', name: 'Arroz (peso crudo)', qty: '40 g (≈120 g cocido)', kcal: 144, p: 3, g: 0, c: 31, eq: 'carbo',
-        cut: { qty: '20 g (≈60 g cocido)', kcal: 72, p: 1, c: 16 } },
+      { id: 'a1', name: 'Pechuga de pollo cocida', qty: '120 g', kcal: 198, p: 37, g: 4, c: 0, cat: 'proteina',
+        alts: ['Atún en agua, drenado', 'Pescado blanco (merluza, reineta), cocido', 'Salmón, cocido', 'Trutro de pollo sin piel, cocido', 'Pechuga de pavo, cruda', 'Carne molida 5 % grasa, cruda'] },
+      { id: 'a2', name: 'Arroz (peso crudo)', qty: '40 g (≈120 g cocido)', kcal: 144, p: 3, g: 0, c: 31, cat: 'carbo',
+        cut: { qty: '20 g (≈60 g cocido)', kcal: 72, p: 1, c: 16 },
+        alts: ['Papa, cruda', 'Fideos, crudos', 'Quínoa, cruda', 'Camote, crudo', 'Arroz integral, crudo', 'Lentejas, crudas', 'Arroz blanco, cocido'] },
       { id: 'a3', name: 'Lechuga', qty: 'a gusto', kcal: 0, p: 0, g: 0, c: 0, free: true },
-      { id: 'a4', name: 'Naranja mediana, en la ensalada', qty: '1 unidad', kcal: 70, p: 1, g: 0, c: 15 },
-      { id: 'a5', name: 'Aceite de oliva, medido', qty: '5 ml (1 cucharadita)', kcal: 40, p: 0, g: 5, c: 0 },
-      { id: 'a6', name: 'Barrita proteica casera', qty: '1 unidad', kcal: 200, p: 0, g: 0, c: 0, estimate: true, cut: null }
+      { id: 'a4', name: 'Naranja mediana, en la ensalada', qty: '1 unidad', kcal: 70, p: 1, g: 0, c: 15, cat: 'fruta',
+        alts: ['Manzana', 'Mandarina', 'Frutillas', 'Kiwi', 'Pera'] },
+      { id: 'a5', name: 'Aceite de oliva, medido', qty: '5 ml (1 cucharadita)', kcal: 40, p: 0, g: 5, c: 0, cat: 'grasa',
+        alts: ['Palta', 'Aceitunas', 'Almendras'] },
+      { id: 'a6', name: 'Barrita proteica casera', qty: '1 unidad', kcal: 200, p: 0, g: 0, c: 0, estimate: true, cut: null, cat: 'otros',
+        alts: ['Yogur proteico', 'Yogur griego natural descremado'] }
     ]
   },
   {
     id: 'm4', name: 'Colación de la tarde', foods: [
-      { id: 'c1', name: 'Yogur proteico', qty: '1 unidad', kcal: 110, p: 15, g: 1, c: 10 },
+      { id: 'c1', name: 'Yogur proteico', qty: '1 unidad', kcal: 110, p: 15, g: 1, c: 10, cat: 'lacteo',
+        alts: ['Yogur griego natural descremado', 'Quesillo', 'Queso cottage', 'Leche descremada'] },
       { id: 'c2', name: 'Jalea sin calorías', qty: 'a gusto', kcal: 0, p: 0, g: 0, c: 0, free: true },
-      { id: 'c3', name: 'Plátano', qty: '50 g (≈½ plátano chico)', kcal: 45, p: 0, g: 0, c: 11, cut: null }
+      { id: 'c3', name: 'Plátano', qty: '50 g (≈½ plátano chico)', kcal: 45, p: 0, g: 0, c: 11, cut: null, cat: 'fruta',
+        alts: ['Manzana', 'Frutillas', 'Arándanos', 'Kiwi'] }
     ]
   },
   {
     id: 'm3', name: 'Once / cena', foods: [
       Object.assign({ id: 'o1' }, TORTILLA),
-      { id: 'o2', name: 'Posta paleta, 3–4 % de grasa (peso crudo)', qty: '150 g', kcal: 180, p: 32, g: 6, c: 0, fixed: true },
-      { id: 'o3', name: 'Palta', qty: '50 g', kcal: 80, p: 1, g: 7, c: 1, fixed: true }
+      { id: 'o2', name: 'Posta paleta, 3–4 % de grasa (peso crudo)', qty: '150 g', kcal: 180, p: 32, g: 6, c: 0, fixed: true, cat: 'proteina',
+        alts: ['Posta negra o rosada, cruda', 'Pechuga de pollo, cruda', 'Filete de vacuno, crudo', 'Lomo de cerdo, crudo', 'Pescado blanco (merluza, reineta), crudo', 'Salmón, crudo'] },
+      { id: 'o3', name: 'Palta', qty: '50 g', kcal: 80, p: 1, g: 7, c: 1, fixed: true, cat: 'grasa',
+        alts: ['Aceitunas', 'Aceite de oliva', 'Almendras'] }
     ]
   }
 ];
-
-const EQUIVALENTS = {
-  proteina: {
-    title: 'Proteína del almuerzo',
-    items: ['120 g de pechuga de pollo cocida (≈198 kcal, 37 g de proteína)',
-      '1 lata de atún al agua, 120 g drenado (≈135 kcal, 30 g de proteína)'],
-    note: 'El día que sea atún sobran ≈60 kcal: se pueden sumar 15 g de arroz crudo.'
-  },
-  carbo: {
-    title: 'Arroz y sus reemplazos (peso crudo)',
-    items: ['Recomposición: 40 g de arroz = 40 g de fideos = 185 g de papa',
-      'Mini cut: 20 g de arroz = 20 g de fideos = 95 g de papa']
-  }
-};
 
 const NUTRITION_TIPS = [
   'Todo se pesa en crudo, salvo lo que diga "cocido". El arroz se pesa antes de cocerlo.',
@@ -260,4 +262,4 @@ const NUTRITION_TIPS = [
   'Bebidas y jugos light: libres. Una copa de vino de 150 ml son ≈125 kcal y se registra.'
 ];
 
-window.DATA = { ROUTINES, ROUTINE_ORDER, PHASES, MEALS, EQUIVALENTS, NUTRITION_TIPS };
+window.DATA = { ROUTINES, ROUTINE_ORDER, PHASES, MEALS, NUTRITION_TIPS };
