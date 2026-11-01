@@ -406,6 +406,9 @@
       const p = pub && pub[ex.id];
       return `<div class="li" style="align-items:flex-start"><span class="grow"><span class="t">${esc(e.name)}${e.alt ? ' <span class="tag warn">hombro</span>' : ''}</span>
         <span class="num">${e.sets.length ? esc(C.setsText(rx, e.sets)) : 'No registrado'}</span>
+        ${e.sets.some(x => x.rir !== undefined && x.rir !== '') ? `<span class="s">RIR real: ${e.sets.map(x => (x.rir === '' || x.rir === undefined ? '—' : x.rir)).join(' · ')}</span>` : ''}
+        ${e.warm && e.warm.length ? `<span class="s">Aproximación: ${e.warm.map(x => esc(C.setText(rx, x))).join(' · ')}</span>` : ''}
+        ${e.setup ? `<span class="s">Setup: ${esc(e.setup)}</span>` : ''}
         ${p ? `<span class="s">Indicado: ${p.kg != null && p.kg !== '' ? nf(p.kg, 2) + ' kg' : 'sin carga'}${p.rir ? ' · RIR ' + esc(p.rir) : ''}</span>` : ''}
         ${e.note ? `<span class="s" style="color:var(--upper)"><b>Mensaje:</b> ${esc(e.note)}</span>` : ''}</span></div>`;
     }).join('');
