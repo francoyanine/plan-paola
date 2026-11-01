@@ -108,6 +108,83 @@
     return { kg, text: `Hoy: repetir ${nf(kg, 2)} kg e intentar sumar repeticiones.` };
   }
 
+  // Indicación del coach para un ejercicio: { kgs: [kg por serie], kg: kg de la serie 1, sets, rir, note }.
+  const presSets = (p, rx) => (p && Number(p.sets) > 0 ? Number(p.sets) : rx.sets);
+  function presKgAt(p, i) {
+    if (!p) return null;
+    const v = p.kgs && p.kgs[i] !== undefined && p.kgs[i] !== null && p.kgs[i] !== '' ? p.kgs[i] : p.kg;
+    return v === null || v === undefined || v === '' ? null : Number(v);
+  }
+  const hasKg = p => !!p && (presKgAt(p, 0) !== null || (p.kgs || []).some(v => v !== null && v !== '' && v !== undefined));
+
+  // Progresión serie por serie desde el último registro: tope del rango → sube; bajo el mínimo → baja; si no, se mantiene.
+  function progressFrom(rx, last, inc, sets) {
+    if (rx.type === 'time' || !rx.inc || !last || !last.sets.length) return null;
+    const n = sets || rx.sets;
+    const kgs = [], moves = [];
+    for (let i = 0; i < n; i++) {
+      const src = last.sets[Math.min(i, last.sets.length - 1)];
+      const kg = num(src.kg);
+      if (!kg) return null;
+      const reps = num(src.reps) || 0;
+      const step = reps >= rx.reps[1] ? 1 : (reps < rx.reps[0] ? -1 : 0);
+      moves.push(step);
+      kgs.push(Math.max(0, Math.round((kg + step * inc) * 100) / 100));
+    }
+    const up = moves.filter(m => m > 0).length, down = moves.filter(m => m < 0).length;
+    const action = up && !down ? 'up' : (down && !up ? 'down' : (up || down ? 'mix' : 'keep'));
+    return { kgs, moves, action };
+  }
+
+  // Diferencia de una serie con la misma serie de la vez anterior: "+1 rep", "+2,5 kg −2 reps".
+  function setDelta(cur, prev) {
+    if (!prev) return '';
+    const dk = Math.round(((num(cur.kg) || 0) - (num(prev.kg) || 0)) * 100) / 100;
+    const dr = (num(cur.reps) || 0) - (num(prev.reps) || 0);
+    const parts = [];
+    if (dk) parts.push(`${dk > 0 ? '+' : '−'}${nf(Math.abs(dk), 2)} kg`);
+    if (dr) parts.push(`${dr > 0 ? '+' : '−'}${Math.abs(dr)} rep${Math.abs(dr) === 1 ? '' : 's'}`);
+    return parts.join(' ');
+  }
+
+  // Comidas del día: plan de la fase, cambios de alimento y extras. day = registro de comida del día.
+  const r1 = n => Math.round(n * 10) / 10;
+  const fmtM = n => String(n >= 10 ? Math.round(n) : r1(n)).replace('.', ',');
+  function mealsForDay(cut, day) {
+    const swaps = (day && day.swaps) || {};
+    const extra = (day && day.extra) || [];
+    return window.DATA.MEALS.map(m => ({
+      id: m.id, name: m.name,
+      foods: m.foods.map(f => {
+        let base = f;
+        if (cut && f.cut !== undefined) {
+          if (f.cut === null) return null;
+          base = Object.assign({}, f, f.cut, { cutPortion: true });
+        }
+        const sw = swaps[f.id];
+        if (!sw) return base;
+        return Object.assign({}, base, { name: sw.n, qty: `${fmtM(sw.grams)} g`, kcal: sw.kcal, p: sw.p, g: sw.g, c: sw.c, estimate: false, free: false, fixed: false, swappedFrom: base.name, plan: base });
+      }).filter(Boolean).concat(extra.filter(x => x.meal === m.id).map(x => ({ id: x.id, name: x.n, qty: `${fmtM(x.grams)} g`, kcal: x.kcal, p: x.p, g: x.g, c: x.c, extra: true })))
+    }));
+  }
+  function dayIntake(cut, day) {
+    const on = (day && day.on) || [];
+    const t = { kcal: 0, p: 0, g: 0, c: 0, eaten: 0, planned: 0, swaps: Object.keys((day && day.swaps) || {}).length, extras: ((day && day.extra) || []).length, water: (day && day.water) || 0 };
+    mealsForDay(cut, day).forEach(m => m.foods.forEach(f => {
+      if (!f.extra && !f.free) t.planned += 1;
+      if (f.extra || on.includes(f.id)) { t.kcal += f.kcal; t.p += f.p; t.g += f.g || 0; t.c += f.c || 0; if (!f.extra && !f.free) t.eaten += 1; }
+    }));
+    ['p', 'g', 'c'].forEach(k => { t[k] = Math.round(t[k]); });
+    return t;
+  }
+  // Metas de la fase con las calorías que definió el coach.
+  function targetsFor(settings, phase) {
+    const info = PHASES[phase] || PHASES.recomp;
+    const kcal = Number(((settings && settings.kcal) || {})[info.kcalKey]) || 1800;
+    const { p, g } = info.macros;
+    return { kcal, p, g, c: Math.max(0, Math.round((kcal - p * 4 - g * 9) / 4)), steps: info.steps || 8000 };
+  }
+
   function scheduleFor(upperDay) {
     const map = { 0: 'LA', 3: 'LB', 4: 'UB' };
     map[upperDay === 'mie' ? 2 : 1] = 'UA';
@@ -151,6 +228,7 @@
   window.CORE = {
     DOW, DOW_LONG, MONTHS, pad, ymd, parse, today, addDays, dowIdx, mondayOf, daysBetween, fmtDay, fmtShort, nf, num, esc, avg,
     blockFor, weekStart, RIR_SCHEMES, parseRir, defaultScheme, rirForSet, rirList,
-    resolveEx, isBodyweight, findExercise, setText, setsText, lastPerfIn, autoSuggest, scheduleFor, pullToRefresh
+    resolveEx, isBodyweight, findExercise, setText, setsText, lastPerfIn, autoSuggest, scheduleFor, pullToRefresh,
+    presSets, presKgAt, hasKg, progressFrom, setDelta, mealsForDay, dayIntake, targetsFor, fmtM
   };
 })();

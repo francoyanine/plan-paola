@@ -527,11 +527,12 @@
   function exerciseCard(r, ex, label, opts) {
     const { active, week, before } = opts;
     const entry = active ? normEntry(S.active.ex[ex.id]) : null;
-    const rx = resolveEx(ex, entry ? entry.alt : !!S.swaps[ex.id]);
-    const last = lastPerf(rx.histKey, before);
     const pres = presFor(week, ex.id);
+    const rx = resolveEx(ex, entry ? entry.alt : !!S.swaps[ex.id]);
+    rx.sets = CORE.presSets(pres, rx);
+    const last = lastPerf(rx.histKey, before);
     const scheme = pres && pres.rir;
-    const presKg = pres && pres.kg !== null && pres.kg !== undefined && pres.kg !== '' ? Number(pres.kg) : null;
+    const presKg = CORE.presKgAt(pres, 0);
     const sug = presKg !== null ? { kg: presKg, text: `Indicada por ${S.settings.coachName}` } : suggestion(rx, last, week);
     const repsChip = rx.type === 'time' ? 'máx. s' : `${rx.reps[0]}–${rx.reps[1]}`;
     const partner = ex.superset ? r.exercises.find(e => e.id === ex.superset) : null;
@@ -563,13 +564,13 @@
 
     // Carga de hoy, serie por serie
     const done = entry ? entry.sets.length : 0;
-    const kgFor = () => (sug.kg ? nf(sug.kg, 2) + ' kg' : '');
+    const kgFor = i => { const v = CORE.presKgAt(pres, i) !== null ? CORE.presKgAt(pres, i) : sug.kg; return v ? nf(v, 2) + ' kg' : ''; };
     parts.push(`<div class="blk"><b>Carga de hoy</b><span class="sug">${esc(sug.text)}</span>
       ${rx.approach ? `<div class="row" style="justify-content:space-between"><span class="small muted">${rx.approach === 1 ? '1 serie' : '1–' + rx.approach + ' series'} de aproximación sin fatigar</span><button class="pillbtn" data-a="info" data-k="approach">¿Qué son?</button></div>` : ''}
       <div class="setchips">${Array.from({ length: rx.sets }, (_, i) => {
         const st = !active ? '' : (i < done ? 'done' : (i === done ? 'now' : 'next'));
         const rir = rx.type === 'time' ? 'máx.' : 'RIR ' + rirFor(week, i, scheme);
-        return `<span class="sc pres ${st}">Serie ${i + 1}${kgFor() ? ' · <b>' + kgFor() + '</b>' : ''} · ${rir}</span>`;
+        return `<span class="sc pres ${st}">Serie ${i + 1}${kgFor(i) ? ' · <b>' + kgFor(i) + '</b>' : ''} · ${rir}</span>`;
       }).join('')}</div></div>`);
 
     if (active) {
@@ -587,7 +588,8 @@
       } else {
         const n = entry.sets.length;
         const d = entry.draft;
-        const kgVal = d.kg !== undefined ? d.kg : (n ? entry.sets[n - 1].kg : (sug.kg ? String(sug.kg) : ''));
+        const presN = CORE.presKgAt(pres, n);
+        const kgVal = d.kg !== undefined ? d.kg : (presN !== null ? String(presN) : (n ? entry.sets[n - 1].kg : (sug.kg ? String(sug.kg) : '')));
         const fields = [];
         if (withKg) fields.push(`<label class="field"><input inputmode="decimal" autocomplete="off" id="dkg-${ex.id}" data-draft="${ex.id}:kg" value="${esc(String(kgVal).replace('.', ','))}" placeholder="kg" aria-label="Kilos"><span class="u">kg</span></label>`);
         fields.push(`<label class="field"><input inputmode="numeric" pattern="[0-9]*" autocomplete="off" id="dreps-${ex.id}" data-draft="${ex.id}:reps" value="${esc(d.reps || '')}" placeholder="${rx.type === 'time' ? 'seg' : 'Reps'}" aria-label="${rx.type === 'time' ? 'Segundos' : 'Repeticiones'}">${rx.type === 'time' ? '<span class="u">s</span>' : ''}</label>`);
@@ -611,7 +613,7 @@
     const week = active ? S.active.week : block().week;
     const labels = exNumbering(r);
     const parts = [];
-    const rxs = r.exercises.map(ex => resolveEx(ex, active ? S.active.ex[ex.id].alt : !!S.swaps[ex.id]));
+    const rxs = r.exercises.map(ex => { const x = resolveEx(ex, active ? S.active.ex[ex.id].alt : !!S.swaps[ex.id]); x.sets = CORE.presSets(presFor(week, ex.id), x); return x; });
     const totalSets = rxs.reduce((a, x) => a + x.sets, 0);
     const groups = {};
     rxs.forEach(x => { groups[x.group] = (groups[x.group] || 0) + x.sets; });
@@ -737,24 +739,7 @@
     d.extra = d.extra || [];
     return d;
   }
-  function mealsFor(date, day) {
-    const cut = block(date).phase === 'cut';
-    const swaps = (day && day.swaps) || {};
-    const extra = (day && day.extra) || [];
-    return MEALS.map(m => ({
-      id: m.id, name: m.name,
-      foods: m.foods.map(f => {
-        let base = f;
-        if (cut && f.cut !== undefined) {
-          if (f.cut === null) return null;
-          base = Object.assign({}, f, f.cut, { cutPortion: true });
-        }
-        const sw = swaps[f.id];
-        if (!sw) return base;
-        return Object.assign({}, base, { name: sw.n, qty: `${fmtM(sw.grams)} g`, kcal: sw.kcal, p: sw.p, g: sw.g, c: sw.c, estimate: false, free: false, fixed: false, swappedFrom: base.name, plan: base });
-      }).filter(Boolean).concat(extra.filter(x => x.meal === m.id).map(x => ({ id: x.id, name: x.n, qty: `${fmtM(x.grams)} g`, kcal: x.kcal, p: x.p, g: x.g, c: x.c, extra: true })))
-    }));
-  }
+  const mealsFor = (date, day) => CORE.mealsForDay(block(date).phase === 'cut', day);
 
   function viewNutricion(dateArg) {
     const date = dateArg || today();
@@ -1217,7 +1202,7 @@
         e.more = false;
         if (!ex.superset) startTimer(rx.rest, rx.name);
       }
-      e.draft = { kg };
+      e.draft = {};
       save(); render();
       if (el.dataset.kind !== 'warm' && ex.superset) {
         const partner = document.getElementById('card-' + ex.superset);
@@ -1282,7 +1267,7 @@
       const a = S.active; if (!a) return;
       unlockAudio();
       const r = ROUTINES[a.routine];
-      const ex = r.exercises.find(x => normEntry(a.ex[x.id]).sets.length < resolveEx(x, a.ex[x.id].alt).sets) || r.exercises[0];
+      const ex = r.exercises.find(x => normEntry(a.ex[x.id]).sets.length < CORE.presSets(presFor(a.week, x.id), resolveEx(x, a.ex[x.id].alt))) || r.exercises[0];
       const rx = resolveEx(ex, a.ex[ex.id].alt);
       startTimer(rx.rest, rx.name);
     },

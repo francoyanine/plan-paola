@@ -34,7 +34,8 @@
       upperDay: s.upperDay || 'mar',
       coachName: s.coachName || 'Franco',
       kcal: Object.assign({ recomp: 1800, cut: 1500 }, s.kcal || {}),
-      swaps: Object.assign({}, s.swaps || {})
+      swaps: Object.assign({}, s.swaps || {}),
+      inc: Object.assign({}, s.inc || {})
     };
   }
   const currentWeek = () => { const st = settings(); return st.startDate ? C.blockFor(st.startDate, today()).week : null; };
@@ -104,27 +105,37 @@
     return { key: 'sent', label: 'Enviada el ' + fmtShort(C.ymd(new Date(row.published_at))) };
   }
   const editing = {};
-  let draftTimer = null;
-  let draftWeek = null;
+  const draftTimers = {};
   function editDraft(w, fn) {
     if (!editing[w]) editing[w] = draftOf(w);
     fn(editing[w]);
     weeks[w] = Object.assign({ week: w, published: null, published_at: null }, weeks[w], { draft: clone(editing[w]) });
-    clearTimeout(draftTimer);
-    draftWeek = w;
-    draftTimer = setTimeout(() => saveDraft(w), 700);
+    clearTimeout(draftTimers[w]);
+    draftTimers[w] = setTimeout(() => saveDraft(w), 700);
+    paintSaving('Guardando…');
+  }
+  const pendingWeeks = () => Object.keys(draftTimers).map(Number);
+  function paintSaving(txt) { document.querySelectorAll('[data-saving]').forEach(el => { el.textContent = txt; }); }
+  function paintStatus(w) {
+    const st = weekStatus(w);
+    document.querySelectorAll(`[data-wstatus="${w}"]`).forEach(el => { el.textContent = st.label; el.className = 'tag ' + statusClass(st.key); });
   }
   async function saveDraft(w) {
-    if (draftWeek === w) { clearTimeout(draftTimer); draftWeek = null; }
+    clearTimeout(draftTimers[w]); delete draftTimers[w];
     const { error } = await sb.from('plan_weeks').upsert({ athlete_id: A.id, week: w, draft: weeks[w].draft, updated_at: new Date().toISOString() });
+    if (error) { toast('No se pudo guardar el borrador: ' + error.message); paintSaving('Error al guardar'); return; }
     const el = document.getElementById('draft-state');
-    if (error) { toast('No se pudo guardar el borrador: ' + error.message); return; }
-    if (el) { el.textContent = 'Borrador guardado'; }
-    const st = document.getElementById('week-status');
-    if (st) { const s = weekStatus(w); st.textContent = s.label; st.className = 'tag ' + statusClass(s.key); }
+    if (el) el.textContent = 'Borrador guardado';
+    if (!pendingWeeks().length) paintSaving('Cambios guardados');
+    paintStatus(w);
+  }
+  // Mantiene kg (serie 1) y kgs (todas las series) coherentes.
+  function setKgs(p, arr) {
+    p.kgs = arr;
+    p.kg = arr.length && arr[0] !== null && arr[0] !== undefined ? arr[0] : null;
   }
   async function publishWeek(w) {
-    clearTimeout(draftTimer);
+    if (draftTimers[w]) await saveDraft(w);
     const draft = (weeks[w] && weeks[w].draft) || draftOf(w);
     const now = new Date().toISOString();
     const { error } = await sb.from('plan_weeks').upsert({ athlete_id: A.id, week: w, draft, published: draft, published_at: now, updated_at: now });
@@ -151,6 +162,16 @@
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => { t.hidden = true; }, 2800);
   }
+  function openSheet(html) {
+    closeSheet();
+    const w = document.createElement('div');
+    w.className = 'sheet-wrap';
+    w.innerHTML = `<div class="sheet" role="dialog" aria-modal="true"><div class="grab"></div>${html}</div>`;
+    w.addEventListener('click', e => { if (e.target === w) closeSheet(); });
+    document.body.appendChild(w);
+  }
+  function closeSheet() { document.querySelectorAll('.sheet-wrap').forEach(n => n.remove()); }
+
   const ICONS = {
     inicio: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11l8-7 8 7v9H4z"/><path d="M10 20v-6h4v6"/></svg>',
     semana: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6.5 6.5v11M17.5 6.5v11M3.5 9v6M20.5 9v6M6.5 12h11"/></svg>',
@@ -301,7 +322,7 @@
         return `<div class="pr-row">
           <div class="pr-name"><b>${esc(rx.name)}</b>${rx.alt ? ' <span class="tag warn">hombro</span>' : ''}<span class="small muted">${rx.sets} × ${repsTxt}${rx.perSide ? ' · cada lado' : ''}</span></div>
           <div class="pr-last small">${last ? `<span class="muted">Sem ${last.week || '?'}:</span> ${esc(C.setsText(rx, last.sets))}` : '<span class="muted">Sin registros</span>'}${sug.kg ? ` · <span class="${sug.up ? 'up' : ''}">sugerido ${nf(sug.kg, 2)} kg</span>` : ''}</div>
-          <div class="pr-inputs">${showKg ? `<label class="field kg"><input inputmode="decimal" autocomplete="off" id="kg-${ex.id}" data-pkg="${ex.id}" value="${p.kg != null ? esc(String(p.kg).replace('.', ',')) : ''}" placeholder="${sug.kg ? nf(sug.kg, 2) : 'kg'}" aria-label="Carga de ${esc(rx.name)}"><span class="u">kg</span></label>` : ''}
+          <div class="pr-inputs">${showKg ? `<label class="field kg"><input inputmode="decimal" autocomplete="off" id="kg-${ex.id}" data-pkg="${ex.id}" value="${C.presKgAt(p, 0) !== null ? esc(String(C.presKgAt(p, 0)).replace('.', ',')) : ''}" placeholder="${sug.kg ? nf(sug.kg, 2) : 'kg'}" aria-label="Carga de ${esc(rx.name)}"><span class="u">kg</span></label>` : ''}
             ${rx.type === 'time' ? '' : rirChips(ex.id, p.rir || '')}</div>
           <input class="inp note-in" id="pn-${ex.id}" data-pnote="${ex.id}" value="${esc(p.note || '')}" placeholder="Nota para ${esc(A.name)} (opcional)" aria-label="Nota del ejercicio">
         </div>`;
@@ -312,6 +333,10 @@
     return { title: 'Progresión', html: parts.join(''), wide: true };
   }
 
+  const incFor = (ex, rx) => { const v = settings().inc[ex.id]; return v !== undefined && v !== null && v !== '' ? Number(v) : rx.inc; };
+  const ACTION = { up: ['up', '↑ Subir'], keep: ['keep', '= Mantener'], down: ['down', '↓ Bajar'], mix: ['mix', '↕ Ajustar'] };
+  const kgTxt = v => (v === null || v === undefined || v === '' ? '' : nf(v, 2));
+
   function planillaWeeks() {
     const cw = currentWeek() || 1;
     const maxSession = Math.max(0, ...recs.session.map(s => s.week || 0));
@@ -320,78 +345,162 @@
     return Array.from({ length: last }, (_, i) => i + 1);
   }
 
-  function viewPlanilla(arg) {
-    if (arg) planillaTab = arg;
-    const st = settings();
-    const ws = planillaWeeks();
-    const cw = currentWeek();
-    const tabs = ROUTINE_ORDER.concat(['CI']).map(t => `<a href="#/planilla/${t}" class="${planillaTab === t ? 'on' : ''}">${t === 'CI' ? 'Check-in' : ROUTINES[t].name}</a>`).join('');
-    const parts = [`<div class="seg-links">${tabs}</div>`];
-    if (planillaTab === 'CI') {
-      const rowsDef = [
-        ['Peso prom.', s => (s.peso !== null ? nf(s.peso, 1) : '—')],
-        ['Δ peso', s => (s.delta !== null ? (s.delta >= 0 ? '+' : '') + nf(s.delta, 2) : '—')],
-        ['Pasos', s => fmtN(s.pasos, 0)],
-        ['Sueño', s => fmtSleep(s.sleep)],
-        ['Calidad sueño', s => fmtN(s.sleepQ)],
-        ['Dieta /10', s => fmtN(s.adh)],
-        ['Hombro /10', s => fmtN(s.hombro)],
-        ['Días registrados', s => `${s.registered}/7`]
-      ];
-      const stats = ws.map(w => (st.startDate ? checkinStats(weekMonday(w)) : null));
-      const head = `<tr><th class="stick">Semana</th>${ws.map(w => `<th class="${w === cw ? 'cur' : ''}">${w}<br><span class="muted">${st.startDate ? esc(fmtShort(weekMonday(w))) : ''}</span></th>`).join('')}</tr>`;
-      const body = rowsDef.map(([label, f]) => `<tr><th class="stick">${label}</th>${stats.map((s, i) => `<td class="${ws[i] === cw ? 'cur' : ''}">${s ? f(s) : '—'}</td>`).join('')}</tr>`).join('');
-      const ses = `<tr><th class="stick">Entrenos</th>${ws.map(w => `<td class="${w === cw ? 'cur' : ''}">${recs.session.filter(s => s.week === w).length}</td>`).join('')}</tr>`;
-      parts.push(`<section class="card flush"><div class="sheet-scroll"><table class="sheet">${head}${body}${ses}</table></div></section>`);
-      const ms = recs.measure.slice().sort((a, b) => (a.date < b.date ? 1 : -1));
-      parts.push(`<section class="card flush"><div style="padding:14px 16px 4px"><h3>Medidas</h3></div>${ms.length ? `<div class="tbl"><table><thead><tr><th>Fecha</th><th>Cintura</th><th>Cadera</th></tr></thead><tbody>${ms.map(m => `<tr><td>${esc(fmtShort(m.date))}</td><td>${m.cintura ? nf(m.cintura, 1) + ' cm' : '—'}</td><td>${m.cadera ? nf(m.cadera, 1) + ' cm' : '—'}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted small" style="padding:0 16px 14px">Sin mediciones todavía.</p>'}</section>`);
-      return { title: 'Planilla', html: parts.join(''), wide: true };
-    }
-    const r = ROUTINES[planillaTab];
-    const head = `<tr><th class="stick">Ejercicio</th>${ws.map(w => `<th class="${w === cw ? 'cur' : ''}"><a href="#/semana/${w}">Sem ${w}</a><br><span class="muted">${esc(phaseLabel(w).replace('Recomposición', 'Recomp'))}</span></th>`).join('')}</tr>`;
-    const body = r.exercises.map(ex => {
-      const cells = ws.map(w => {
-        const row = weeks[w];
-        const pub = row && row.published && row.published.exercises && row.published.exercises[ex.id];
-        const dr = row && row.draft && row.draft.exercises && row.draft.exercises[ex.id];
-        const p = pub || dr;
-        const presTxt = p && (p.kg != null || p.rir) ? `${p.kg != null && p.kg !== '' ? nf(p.kg, 2) + ' kg' : ''}${p.kg != null && p.kg !== '' && p.rir ? ' · ' : ''}${p.rir ? 'RIR ' + esc(p.rir) : ''}` : '';
-        const s = sessionsSorted().filter(x => x.week === w && x.routine === r.id).pop();
-        const e = s && s.ex[ex.id];
-        let act = '';
-        let cls = '';
-        if (e && e.sets.length) {
-          const rx = C.resolveEx(ex, e.alt);
-          act = esc(C.setsText(rx, e.sets).replace(/ kg × /, '×').replace(/ · /g, '·'));
-          if (rx.type !== 'time' && e.sets.length >= rx.sets && e.sets.every(x => (num(x.reps) || 0) >= rx.reps[1])) cls = 'top';
-          if (e.note) cls += ' msg';
-        }
-        return `<td class="${w === cw ? 'cur' : ''} ${cls}">${presTxt ? `<span class="pres ${pub ? '' : 'draft'}">${presTxt}</span>` : ''}${act ? `<span class="act">${act}</span>` : (presTxt ? '' : '<span class="muted">—</span>')}</td>`;
-      }).join('');
-      const rx0 = C.resolveEx(ex, !!st.swaps[ex.id]);
-      return `<tr><th class="stick">${esc(rx0.name)}<br><span class="muted">${rx0.sets} × ${rx0.type === 'time' ? 'máx.' : rx0.reps.join('–')}</span></th>${cells}</tr>`;
-    }).join('');
-    parts.push(`<section class="card flush"><div class="sheet-scroll"><table class="sheet">${head}${body}</table></div></section>`);
-    parts.push(`<p class="small muted">Arriba de cada celda, lo indicado (en gris si es borrador). Abajo, lo que hizo. Verde: llegó al tope del rango en todas las series y toca subir. Borde azul: dejó un mensaje.</p>`);
-    return { title: 'Planilla', html: parts.join(''), wide: true };
+  function weekHeaderCell(w, cw) {
+    const st = weekStatus(w);
+    const d = editing[w] || draftOf(w);
+    const rirs = new Set(Object.values(d.exercises).map(p => p.rir).filter(Boolean));
+    const rirVal = rirs.size === 1 ? [...rirs][0] : '';
+    return `<th class="wk ${w === cw ? 'cur' : ''}"><div class="wkh">
+      <span class="wkt">Semana ${w}${w === cw ? ' · actual' : ''}</span>
+      <span class="muted">${esc(phaseLabel(w))} · ${esc(fmtShort(weekMonday(w)))}–${esc(fmtShort(addDays(weekMonday(w), 6)))}</span>
+      <span class="tag ${statusClass(st.key)}" data-wstatus="${w}">${esc(st.label)}</span>
+      <div class="wkrir"><label for="wrir-${w}">RIR</label><input id="wrir-${w}" class="mini" value="${esc(rirVal)}" placeholder="${C.defaultScheme(w)}" maxlength="5"><button class="btn small upper" data-a="apply-rir" data-w="${w}">Aplicar RIR</button></div>
+      <button class="btn small ghost" data-a="publish" data-w="${w}">Enviar semana ${w}</button></div></th>`;
   }
 
-  function viewRegistros() {
-    const parts = [];
-    const ses = sessionsSorted().reverse();
-    parts.push(`<section class="card flush"><div style="padding:14px 16px 4px" class="card-head"><h3>Entrenamientos</h3><span class="small muted">${ses.length}</span></div><div class="list">${ses.length ? ses.slice(0, 30).map(s => {
-      const n = Object.values(s.ex).reduce((a, e) => a + e.sets.length, 0);
-      const msg = Object.values(s.ex).some(e => e.note);
-      return `<a class="li" href="#/sesion/${encodeURIComponent(s.id)}">${kindTag(s.routine)}<span class="grow"><span class="s">${esc(fmtDay(s.date))} · sem ${s.week} · ${s.minutes} min · ${n} series</span></span>${msg ? '<span class="tag upper">mensaje</span>' : ''}<span class="chev">›</span></a>`;
-    }).join('') : '<div class="li"><span class="muted small">Todavía no hay entrenamientos.</span></div>'}</div></section>`);
-    const days = Array.from({ length: 14 }, (_, i) => addDays(today(), -i));
-    const rows = days.map(d => {
-      const c = recs.checkin[d];
-      if (!c) return `<tr><td>${esc(fmtShort(d))}</td><td colspan="6" class="muted">sin registro</td></tr>`;
-      return `<tr><td>${esc(fmtShort(d))}</td><td>${c.noPeso ? 'no' : (num(c.peso) ? nf(num(c.peso), 1) : '—')}</td><td>${num(c.pasos) !== null ? nf(num(c.pasos), 0) : '—'}</td><td>${c.sleepH !== undefined && c.sleepH !== '' ? `${c.sleepH} h ${C.pad(num(c.sleepM) || 0)}` : '—'}${c.sleepQ ? ` (${c.sleepQ}/5)` : ''}</td><td>${c.adh || '—'}</td><td>${c.hombro !== undefined && c.hombro !== '' ? c.hombro : '—'}</td><td>${c.energy ? esc(c.energy) : '—'}</td></tr>${c.nota ? `<tr class="note-row"><td></td><td colspan="6">${esc(c.nota)}</td></tr>` : ''}`;
+  function planCell(r, ex, w, cw) {
+    const st = settings();
+    const rx = C.resolveEx(ex, !!st.swaps[ex.id]);
+    const d = editing[w] || draftOf(w);
+    const p = d.exercises[ex.id] || {};
+    const sets = C.presSets(p, rx);
+    const scheme = p.rir || C.defaultScheme(w);
+    const repsTxt = rx.type === 'time' ? 'máx. s' : `${rx.reps[0]}–${rx.reps[1]}`;
+    const withKg = rx.type !== 'time' && !C.isBodyweight(rx);
+    const parts = [`<div class="ch">${sets}s ${repsTxt} · RIR ${esc(scheme)} · 2-1-X-1</div>`];
+    const sAll = sessionsSorted();
+    const ses = sAll.filter(x => x.week === w && x.routine === r.id && x.ex[ex.id] && x.ex[ex.id].sets.length).pop();
+    const e = ses && ses.ex[ex.id];
+    if (e) {
+      const erx = C.resolveEx(ex, e.alt);
+      const prev = C.lastPerfIn(sAll.filter(x => x.finishedAt < ses.finishedAt), e.histKey);
+      const lines = (e.warm || []).map(x => `<div class="lg warm">~ ${esc(C.setText(erx, x))}</div>`)
+        .concat(e.sets.map((x, i) => {
+          const dl = prev ? C.setDelta(x, prev.sets[Math.min(i, prev.sets.length - 1)]) : '';
+          return `<div class="lg"><b>${esc(C.setText(erx, x))}</b>${x.rir !== undefined && x.rir !== '' ? ` <span class="muted">RIR ${esc(x.rir)}</span>` : ''}${dl ? `<span class="dl ${dl.includes('+') ? 'pos' : 'neg'}">${esc(dl)}</span>` : ''}</div>`;
+        }));
+      const maxKg = Math.max(0, ...e.sets.map(x => num(x.kg) || 0));
+      parts.push(`<div class="logs">${lines.join('')}<div class="sum">${e.sets.length}/${sets} series${maxKg ? ' · ' + nf(maxKg, 2) + ' kg' : ''}</div></div>`);
+      if (e.setup) parts.push(`<div class="nt setup">Setup · ${esc(e.setup)}</div>`);
+      if (e.note) parts.push(`<div class="nt msg">${esc(e.note)}</div>`);
+    } else {
+      parts.push(`<div class="logs muted">Sin registro</div>`);
+    }
+    // Edición de la semana: kilos por serie, series, RIR y nota.
+    const ed = [];
+    if (withKg) {
+      const prog = C.progressFrom(rx, lastBefore(rx, w), incFor(ex, rx), sets);
+      const auto = p.auto && ACTION[p.auto];
+      const hint = prog && ACTION[prog.action];
+      const badge = auto || (C.hasKg(p) ? null : hint);
+      const prevRef = i => C.presKgAt((editing[w - 1] || draftOf(w - 1)).exercises[ex.id], i);
+      ed.push(`<div class="edtop">${badge ? `<span class="act ${badge[0]}">${badge[1]}</span>` : '<span></span>'}${!C.hasKg(p) && prog ? `<span class="muted">sugerido ${nf(prog.kgs[0], 2)} kg</span>` : ''}</div>`);
+      ed.push(`<div class="kgs">${Array.from({ length: sets }, (_, i) => {
+        const v = C.presKgAt(p, i);
+        const ref = prevRef(i);
+        const diff = v !== null && ref !== null ? Math.round((v - ref) * 100) / 100 : 0;
+        return `<label class="kgcell"><span class="muted">S${i + 1}${diff ? ` <i class="${diff > 0 ? 'pos' : 'neg'}">${diff > 0 ? '↑' : '↓'}${nf(Math.abs(diff), 2)}</i>` : ''}</span>
+          <input inputmode="decimal" autocomplete="off" data-cw="${w}" data-cex="${ex.id}" data-cf="kg${i}" value="${esc(kgTxt(v).replace('.', ','))}" placeholder="${prog ? nf(prog.kgs[i], 2) : 'kg'}" aria-label="Kilos serie ${i + 1}, semana ${w}"></label>`;
+      }).join('')}</div>`);
+    }
+    ed.push(`<div class="sr"><label><span class="muted">Series</span><input inputmode="numeric" data-cw="${w}" data-cex="${ex.id}" data-cf="sets" value="${esc(p.sets || '')}" placeholder="${rx.sets}" aria-label="Series"></label>
+      ${rx.type === 'time' ? '' : `<label><span class="muted">RIR</span><input data-cw="${w}" data-cex="${ex.id}" data-cf="rir" value="${esc(p.rir || '')}" placeholder="${C.defaultScheme(w)}" maxlength="5" aria-label="RIR"></label>`}</div>`);
+    ed.push(`<input class="cnote" data-cw="${w}" data-cex="${ex.id}" data-cf="note" value="${esc(p.note || '')}" placeholder="Nota para ${esc(A.name)}" aria-label="Nota">`);
+    parts.push(`<div class="ed">${ed.join('')}</div>`);
+    return `<td class="pc ${w === cw ? 'cur' : ''}">${parts.join('')}</td>`;
+  }
+
+  function viewPlanilla(arg) {
+    if (arg && ROUTINES[arg]) planillaTab = arg;
+    const st = settings();
+    if (!st.startDate) return { title: 'Planilla', html: `<a class="notice" href="#/ajustes" style="text-decoration:none"><div><b>Falta la fecha de inicio.</b> Defínela en Ajustes.</div></a>` };
+    const ws = planillaWeeks();
+    const cw = currentWeek();
+    const r = ROUTINES[planillaTab];
+    const tabs = ROUTINE_ORDER.map(t => `<a href="#/planilla/${t}" class="${planillaTab === t ? 'on' : ''}">${ROUTINES[t].name}</a>`).join('');
+    const head = `<tr><th class="stick exh">Ejercicio</th>${ws.map(w => weekHeaderCell(w, cw)).join('')}</tr>`;
+    const body = r.exercises.map(ex => {
+      const rx = C.resolveEx(ex, !!st.swaps[ex.id]);
+      const inc = incFor(ex, rx);
+      const incs = [0, 1.25, 2.5, 5, 10];
+      const left = `<th class="stick exn"><b>${esc(rx.name)}</b><span class="muted">${esc(rx.group)}${rx.alt ? ' · variante hombro' : ''}</span>
+        <a class="linkbtn" href="${esc(rx.video || 'https://www.youtube.com/results?search_query=' + encodeURIComponent(rx.name + ' técnica'))}" target="_blank" rel="noopener">Ver video</a>
+        ${rx.type === 'time' || !rx.inc ? '<span class="muted small">Sin carga</span>' : `<span class="muted small">Progresión kg</span>
+        <div class="incs">${incs.map(v => `<button class="${inc === v ? 'on' : ''}" data-a="set-inc" data-ex="${ex.id}" data-v="${v}">${nf(v, 2)}</button>`).join('')}<input class="mini" data-inc="${ex.id}" value="${incs.includes(inc) ? '' : nf(inc, 2)}" placeholder="otro" aria-label="Otro incremento"></div>`}</th>`;
+      return `<tr>${left}${ws.map(w => planCell(r, ex, w, cw)).join('')}</tr>`;
     }).join('');
-    parts.push(`<section class="card flush"><div style="padding:14px 16px 4px"><h3>Check-ins de las últimas 2 semanas</h3></div><div class="tbl"><table><thead><tr><th>Día</th><th>Peso</th><th>Pasos</th><th>Sueño</th><th>Dieta</th><th>Hombro</th><th>Energía</th></tr></thead><tbody>${rows}</tbody></table></div></section>`);
-    return { title: 'Registros', html: parts.join(''), wide: true };
+    const html = `<div class="ptools"><div class="seg-links">${tabs}</div>
+        <div class="row"><span class="small muted" data-saving>${pendingWeeks().length ? 'Guardando…' : 'Los cambios se guardan solos'}</span><button class="btn small upper" data-a="calc-prog">Calcular progresiones</button></div></div>
+      <section class="card flush"><div class="sheet-scroll"><table class="grid plan">${head}${body}</table></div></section>
+      <p class="small muted">Cada celda muestra arriba lo indicado y lo que registró ${esc(A.name)}, con la diferencia frente a la vez anterior. Abajo se edita la semana: kilos por serie, series, RIR y nota. «Calcular progresiones» rellena las cargas vacías de esta semana y la próxima: sube el incremento elegido si llegó al tope del rango y baja si quedó bajo el mínimo. Nada le llega hasta que toques «Enviar semana».</p>`;
+    return { title: 'Planilla', html, wide: true };
+  }
+
+  // Check-in semanal: días en columnas, campos en filas, con colores y promedio.
+  function viewCheckin(arg) {
+    const st = settings();
+    if (!st.startDate) return { title: 'Check-in', html: `<a class="notice" href="#/ajustes" style="text-decoration:none"><div><b>Falta la fecha de inicio.</b> Defínela en Ajustes.</div></a>` };
+    const cw = Math.max(1, currentWeek() || 1);
+    const w = Math.min(cw, Math.max(1, parseInt(arg, 10) || cw));
+    const monday = weekMonday(w);
+    const days = Array.from({ length: 7 }, (_, i) => addDays(monday, i));
+    const map = C.scheduleFor(st.upperDay);
+    const chips = Array.from({ length: cw }, (_, i) => i + 1).map(x => `<a href="#/registros/${x}" class="${x === w ? 'on' : ''}">Semana ${x}<span>${esc(fmtShort(weekMonday(x)))}–${esc(fmtShort(addDays(weekMonday(x), 6)))}</span></a>`).join('');
+    const info = days.map((d, i) => {
+      const c = recs.checkin[d] || null;
+      const ses = recs.session.filter(x => x.date === d);
+      const phase = C.blockFor(st.startDate, d).phase;
+      const food = recs.food[d];
+      return { d, i, c, ses, tg: C.targetsFor(st, phase), it: food ? C.dayIntake(phase === 'cut', food) : null, plan: map[i] };
+    });
+    const cell = (txt, cls) => `<td class="${cls || ''}">${txt === '' || txt === null || txt === undefined ? '<span class="muted">—</span>' : txt}</td>`;
+    const avgCell = (vals, f) => { const v = vals.filter(x => x !== null && x !== undefined && Number.isFinite(x)); return `<td class="avg">${v.length ? f(C.avg(v)) : ''}</td>`; };
+    const ratio = (v, goal, lo, hi) => (v / goal >= lo && v / goal <= hi ? 'good' : 'bad');
+    const rows = [];
+    const sec = t => rows.push(`<tr class="sec"><td colspan="9">${t}</td></tr>`);
+    const row = (label, cells, avg) => rows.push(`<tr><th class="stick">${label}</th>${cells.join('')}${avg || '<td class="avg"></td>'}</tr>`);
+    sec('Biofeedback');
+    row('Peso en ayunas', info.map(x => cell(x.c ? (x.c.noPeso ? 'No se pesó' : (num(x.c.peso) ? nf(num(x.c.peso), 2) : '')) : '')), avgCell(info.map(x => (x.c && !x.c.noPeso ? num(x.c.peso) : null)), v => nf(v, 2) + ' kg'));
+    row('Energía', info.map(x => { const v = x.c && x.c.energy; return cell(v ? { baja: 'Baja', promedio: 'Promedio', alta: 'Alta' }[v] : '', v === 'alta' ? 'good' : (v === 'baja' ? 'bad' : '')); }));
+    row('Dolor de hombro', info.map(x => { const v = x.c ? num(x.c.hombro) : null; return cell(v !== null ? v + '/10' : '', v === null ? '' : (v >= 4 ? 'bad' : (v <= 1 ? 'good' : ''))); }), avgCell(info.map(x => (x.c ? num(x.c.hombro) : null)), v => nf(v, 1)));
+    sec('Entrenamiento');
+    row('Entrenamiento (hecho / plan)', info.map(x => {
+      const done = x.ses.map(s => `${ROUTINES[s.routine].name} ✓`).join('<br>');
+      const plan = x.plan ? `<span class="muted small">plan: ${ROUTINES[x.plan].name}</span>` : '<span class="muted small">Descanso</span>';
+      return cell(done ? `${done}<br>${plan}` : plan, done ? 'good' : '');
+    }));
+    row('Duración', info.map(x => cell(x.ses.map(s => `${Math.floor(s.minutes / 60) ? Math.floor(s.minutes / 60) + ' h ' : ''}${s.minutes % 60} m`).join('<br>'))));
+    row('Dificultad', info.map(x => cell(x.ses.filter(s => s.difficulty).map(s => s.difficulty + '/5').join('<br>'))));
+    row('Hombro al terminar', info.map(x => { const v = x.ses.map(s => s.shoulder).filter(n => n !== null && n !== undefined); return cell(v.map(n => n + '/10').join('<br>'), v.some(n => n >= 4) ? 'bad' : ''); }));
+    row('Pasos / meta', info.map(x => { const v = x.c ? num(x.c.pasos) : null; return cell(v !== null ? `${nf(v, 0)}<span class="muted">/${nf(x.tg.steps, 0)}</span>` : '', v === null ? '' : (v >= x.tg.steps ? 'good' : (v < x.tg.steps * 0.7 ? 'bad' : ''))); }), avgCell(info.map(x => (x.c ? num(x.c.pasos) : null)), v => nf(v, 0)));
+    sec('Nutrición');
+    row('Cumplimiento (1–10)', info.map(x => { const v = x.c ? num(x.c.adh) : null; return cell(v !== null ? v + '/10' : '', v === null ? '' : (v >= 8 ? 'good' : (v <= 5 ? 'bad' : ''))); }), avgCell(info.map(x => (x.c ? num(x.c.adh) : null)), v => nf(v, 1)));
+    const logged = x => x.it && (x.it.eaten || x.it.extras);
+    row('Kcal / meta', info.map(x => cell(logged(x) ? `${x.it.kcal}<span class="muted">/${x.tg.kcal}</span>` : '', logged(x) ? ratio(x.it.kcal, x.tg.kcal, 0.9, 1.1) : '')));
+    row('Proteína / meta (g)', info.map(x => cell(logged(x) ? `${x.it.p}<span class="muted">/${x.tg.p}</span>` : '', logged(x) ? ratio(x.it.p, x.tg.p, 0.9, 1.5) : '')));
+    row('Carbos / meta (g)', info.map(x => cell(logged(x) ? `${x.it.c}<span class="muted">/${x.tg.c}</span>` : '', logged(x) ? ratio(x.it.c, x.tg.c, 0.8, 1.2) : '')));
+    row('Grasas / meta (g)', info.map(x => cell(logged(x) ? `${x.it.g}<span class="muted">/${x.tg.g}</span>` : '', logged(x) ? ratio(x.it.g, x.tg.g, 0.8, 1.2) : '')));
+    row('Agua / meta (L)', info.map(x => { const v = x.it ? x.it.water / 1000 : null; return cell(v ? `${nf(v, 2)}<span class="muted">/2</span>` : '', v ? (v >= 2 ? 'good' : (v < 1.2 ? 'bad' : '')) : ''); }));
+    row('Plan marcado', info.map(x => cell(x.it && x.it.planned ? `${Math.round(x.it.eaten / x.it.planned * 100)} %` : '', x.it && x.it.planned ? (x.it.eaten / x.it.planned >= 0.85 ? 'good' : (x.it.eaten / x.it.planned < 0.5 ? 'bad' : '')) : '')));
+    row('Cambios y extras', info.map(x => cell(x.it && (x.it.swaps || x.it.extras) ? [x.it.swaps ? x.it.swaps + ' cambio' + (x.it.swaps > 1 ? 's' : '') : '', x.it.extras ? x.it.extras + ' extra' + (x.it.extras > 1 ? 's' : '') : ''].filter(Boolean).join(' · ') : '')));
+    sec('Sueño');
+    row('Calidad', info.map(x => { const v = x.c ? num(x.c.sleepQ) : null; return cell(v !== null ? v + '/5' : '', v === null ? '' : (v >= 4 ? 'good' : (v <= 2 ? 'bad' : ''))); }), avgCell(info.map(x => (x.c ? num(x.c.sleepQ) : null)), v => nf(v, 1)));
+    const sleepMin = x => (x.c && x.c.sleepH !== undefined && x.c.sleepH !== '' ? (num(x.c.sleepH) || 0) * 60 + (num(x.c.sleepM) || 0) : null);
+    row('Horas', info.map(x => { const v = sleepMin(x); return cell(v !== null ? fmtSleep(v) : '', v === null ? '' : (v >= 420 ? 'good' : (v < 360 ? 'bad' : ''))); }), avgCell(info.map(sleepMin), fmtSleep));
+    sec('Notas');
+    row('Nota del día', info.map(x => cell(x.c && x.c.nota ? esc(x.c.nota) : '', 'txt')));
+    row('Mensajes de ejercicios', info.map(x => cell(x.ses.flatMap(s => Object.values(s.ex).filter(e => e.note).map(e => `<b>${esc(e.name)}:</b> ${esc(e.note)}`)).join('<br>'), 'txt')));
+    const head = `<tr><th class="stick">Campo</th>${info.map(x => `<th class="${x.d === today() ? 'cur' : ''}">D${x.i + 1}<br>${DOW[x.i]}<br><span class="muted">${esc(fmtShort(x.d))}</span></th>`).join('')}<th>Prom.</th></tr>`;
+    const ses = sessionsSorted().reverse();
+    const ms = recs.measure.slice().sort((a, b2) => (a.date < b2.date ? 1 : -1));
+    const html = `<div class="seg-links weeks">${chips}</div>
+      <section class="card flush"><div class="sheet-scroll"><table class="grid ci">${head}${rows.join('')}</table></div></section>
+      <section class="card flush"><div style="padding:14px 16px 4px" class="card-head"><h3>Entrenamientos</h3><span class="small muted">${ses.length}</span></div><div class="list">${ses.length ? ses.slice(0, 30).map(x => {
+        const n = Object.values(x.ex).reduce((a, e) => a + e.sets.length, 0);
+        return `<a class="li" href="#/sesion/${encodeURIComponent(x.id)}">${kindTag(x.routine)}<span class="grow"><span class="s">${esc(fmtDay(x.date))} · sem ${x.week} · ${x.minutes} min · ${n} series</span></span>${Object.values(x.ex).some(e => e.note) ? '<span class="tag upper">mensaje</span>' : ''}<span class="chev">›</span></a>`;
+      }).join('') : '<div class="li"><span class="muted small">Todavía no hay entrenamientos.</span></div>'}</div></section>
+      <section class="card flush"><div style="padding:14px 16px 4px"><h3>Medidas</h3></div>${ms.length ? `<div class="tbl"><table><thead><tr><th>Fecha</th><th>Cintura</th><th>Cadera</th></tr></thead><tbody>${ms.map(m => `<tr><td>${esc(fmtShort(m.date))}</td><td>${m.cintura ? nf(m.cintura, 1) + ' cm' : '—'}</td><td>${m.cadera ? nf(m.cadera, 1) + ' cm' : '—'}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted small" style="padding:0 16px 14px">Sin mediciones todavía.</p>'}</section>`;
+    return { title: 'Check-in', html, wide: true };
   }
 
   function viewSesion(id) {
@@ -446,7 +555,7 @@
   }
 
   // ---------- Render ----------
-  const TABS = [['inicio', 'Inicio'], ['semana', 'Semana'], ['planilla', 'Planilla'], ['registros', 'Registros'], ['ajustes', 'Ajustes']];
+  const TABS = [['inicio', 'Inicio'], ['planilla', 'Planilla'], ['semana', 'Semana'], ['registros', 'Check-in'], ['ajustes', 'Ajustes']];
   const TAB_OF = { inicio: 'inicio', semana: 'semana', planilla: 'planilla', registros: 'registros', sesion: 'registros', ajustes: 'ajustes' };
   let lastRoute = null;
   const current = () => {
@@ -467,7 +576,7 @@
       switch (name) {
         case 'semana': v = viewSemana(arg); break;
         case 'planilla': v = viewPlanilla(arg); break;
-        case 'registros': v = viewRegistros(); break;
+        case 'registros': v = viewCheckin(arg); break;
         case 'sesion': v = viewSesion(arg); break;
         case 'ajustes': v = viewAjustes(); break;
         default: v = viewInicio();
@@ -518,9 +627,9 @@
         ROUTINE_ORDER.forEach(rid => ROUTINES[rid].exercises.forEach(ex => {
           const rx = C.resolveEx(ex, !!st.swaps[ex.id]);
           const p = d.exercises[ex.id] = d.exercises[ex.id] || {};
-          if (p.kg != null && p.kg !== '') return;
-          const sug = C.autoSuggest(rx, lastBefore(rx, w), C.rirForSet(p.rir, w, 0));
-          if (sug.kg) { p.kg = sug.kg; n += 1; }
+          if (C.hasKg(p)) return;
+          const prog = C.progressFrom(rx, lastBefore(rx, w), incFor(ex, rx), C.presSets(p, rx));
+          if (prog) { setKgs(p, prog.kgs); p.auto = prog.action; n += 1; }
         }));
       });
       render(); toast(n ? `${n} cargas rellenadas` : 'No hay sugerencias nuevas: faltan registros previos');
@@ -533,6 +642,51 @@
       if (el.dataset.confirm !== '1') { el.dataset.confirm = '1'; el.textContent = `Toca otra vez para enviar a ${A.name}`; return; }
       publishWeek(w);
     },
+    'set-inc': el => {
+      const inc = Object.assign({}, settings().inc, { [el.dataset.ex]: Number(el.dataset.v) });
+      saveSettings({ inc }).then(ok => ok && render());
+    },
+    'apply-rir': el => {
+      const w = Number(el.dataset.w);
+      const v = document.getElementById('wrir-' + w).value.trim().replace(/\s/g, '');
+      if (!C.parseRir(v)) { toast('Escribe un RIR como 2, 2-1, 1-0, 1 o 0'); return; }
+      editDraft(w, d => {
+        ROUTINE_ORDER.forEach(rid => ROUTINES[rid].exercises.forEach(ex => {
+          const rx = C.resolveEx(ex, !!settings().swaps[ex.id]);
+          if (rx.type === 'time') return;
+          (d.exercises[ex.id] = d.exercises[ex.id] || {}).rir = v;
+        }));
+      });
+      render(); toast(`RIR ${v} aplicado a toda la semana ${w}`);
+    },
+    'calc-prog': () => {
+      const st = settings();
+      const cw = Math.max(1, currentWeek() || 1);
+      const filled = [], trained = [], noLoad = [], manual = [], noData = [];
+      [cw, cw + 1].forEach(w => ROUTINE_ORDER.forEach(rid => ROUTINES[rid].exercises.forEach(ex => {
+        const rx = C.resolveEx(ex, !!st.swaps[ex.id]);
+        const label = `S${w} · ${ROUTINES[rid].name} · ${rx.name}`;
+        if (rx.type === 'time' || !rx.inc) { noLoad.push(label); return; }
+        if (recs.session.some(x => x.week === w && x.routine === rid && x.ex[ex.id] && x.ex[ex.id].sets.length)) { trained.push(label); return; }
+        const p = (editing[w] || draftOf(w)).exercises[ex.id] || {};
+        if (C.hasKg(p) && !p.auto) { manual.push(label); return; }
+        const n = C.presSets(p, rx);
+        let prog = C.progressFrom(rx, lastBefore(rx, w), incFor(ex, rx), n);
+        if (!prog) {
+          const pp = (editing[w - 1] || draftOf(w - 1)).exercises[ex.id];
+          if (C.hasKg(pp)) prog = { kgs: Array.from({ length: n }, (_, i) => C.presKgAt(pp, i)), action: 'keep' };
+        }
+        if (!prog) { noData.push(label); return; }
+        editDraft(w, dd => { const q = dd.exercises[ex.id] = dd.exercises[ex.id] || {}; setKgs(q, prog.kgs); q.auto = prog.action; });
+        filled.push({ label, kg: prog.kgs[0], action: prog.action });
+      })));
+      render();
+      const grp = (title, list, open) => `<details ${open ? 'open' : ''}><summary><b>${title}: ${list.length}</b></summary><ul>${list.map(x => `<li>${typeof x === 'string' ? esc(x) : `${esc(x.label)} → <b>${nf(x.kg, 2)} kg</b> <span class="act ${ACTION[x.action][0]}">${ACTION[x.action][1]}</span>`}</li>`).join('') || '<li class="muted">—</li>'}</ul></details>`;
+      openSheet(`<h2>Detalle de progresiones</h2><p class="muted small">Semanas ${cw} y ${cw + 1}. Rellena las cargas vacías y recalcula las que puso el cálculo; lo que escribiste a mano no se toca.</p>
+        ${grp('Rellenadas', filled, true)}${grp('Ya entrenado', trained)}${grp('Con carga puesta a mano', manual)}${grp('Sin registros previos', noData)}${grp('Sin carga (peso corporal o tiempo)', noLoad)}
+        <button class="btn block ghost" data-a="close-sheet">Cerrar</button>`);
+    },
+    'close-sheet': () => closeSheet(),
     'upper-day': el => { saveSettings({ upperDay: el.dataset.v }).then(ok => ok && render()); },
     swap: el => {
       const swaps = Object.assign({}, settings().swaps);
@@ -550,10 +704,42 @@
 
   document.addEventListener('input', e => {
     const t = e.target;
+    if (t.dataset.cw) {
+      const cw = Number(t.dataset.cw), id = t.dataset.cex, f = t.dataset.cf;
+      const exInfo = C.findExercise(id);
+      const rx = C.resolveEx(exInfo.ex, !!settings().swaps[id]);
+      const v = t.value.trim();
+      if (f === 'rir') t.classList.toggle('bad', !!v && !C.parseRir(v));
+      editDraft(cw, d => {
+        const p = d.exercises[id] = d.exercises[id] || {};
+        if (f.startsWith('kg')) {
+          const n = C.presSets(p, rx);
+          const arr = Array.from({ length: n }, (_, i) => C.presKgAt(p, i));
+          arr[Number(f.slice(2))] = v === '' ? null : num(v);
+          setKgs(p, arr);
+          delete p.auto;
+        } else if (f === 'sets') {
+          const n = parseInt(v, 10);
+          if (n > 0 && n <= 8) p.sets = n; else delete p.sets;
+        } else if (f === 'rir') {
+          p.rir = v.replace(/\s/g, '');
+        } else if (f === 'note') {
+          p.note = t.value;
+        }
+      });
+      return;
+    }
+    if (t.dataset.inc) return;
     const w = routeWeek();
     if (t.dataset.pkg && w) {
       const v = t.value.trim();
-      editDraft(w, d => { const p = d.exercises[t.dataset.pkg] = d.exercises[t.dataset.pkg] || {}; p.kg = v === '' ? null : num(v); });
+      const exInfo = C.findExercise(t.dataset.pkg);
+      editDraft(w, d => {
+        const p = d.exercises[t.dataset.pkg] = d.exercises[t.dataset.pkg] || {};
+        const n = C.presSets(p, C.resolveEx(exInfo.ex, !!settings().swaps[t.dataset.pkg]));
+        setKgs(p, Array(n).fill(v === '' ? null : num(v)));
+        delete p.auto;
+      });
     } else if (t.dataset.prir && w) {
       const v = t.value.trim().replace(/\s/g, '');
       t.classList.toggle('bad', !!v && !C.parseRir(v));
@@ -577,6 +763,12 @@
       saveSettings({ kcal: Object.assign({}, settings().kcal, { [t.dataset.kcal]: Math.round(v) }) });
     } else if (t.id === 'c-name') {
       saveSettings({ coachName: t.value.trim() || 'Franco' });
+    } else if (t.dataset.inc) {
+      const v = num(t.value);
+      if (v === null || v < 0 || v > 50) { toast('Incremento fuera de rango'); return; }
+      saveSettings({ inc: Object.assign({}, settings().inc, { [t.dataset.inc]: v }) }).then(ok => ok && render());
+    } else if (t.dataset.cf === 'sets') {
+      render();
     } else if (t.id === 'c-ath') {
       lsSet('plan-coach-athlete', t.value);
       loadAll();
@@ -599,7 +791,7 @@
 
   window.addEventListener('hashchange', render);
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden && user && loadedAt && Date.now() - loadedAt > 120000 && current().name !== 'semana') loadAll();
+    if (!document.hidden && user && loadedAt && Date.now() - loadedAt > 120000 && !['semana', 'planilla'].includes(current().name) && !pendingWeeks().length) loadAll();
   });
 
   (async function boot() {
@@ -616,7 +808,7 @@
   })();
 
   C.pullToRefresh(async () => {
-    if (draftWeek !== null) await saveDraft(draftWeek);
+    for (const w of pendingWeeks()) await saveDraft(w);
     location.reload();
   });
 
