@@ -464,6 +464,12 @@
     const rows = [];
     const sec = t => rows.push(`<tr class="sec"><td colspan="9">${t}</td></tr>`);
     const row = (label, cells, avg) => rows.push(`<tr><th class="stick">${label}</th>${cells.join('')}${avg || '<td class="avg"></td>'}</tr>`);
+    sec('Check-in');
+    row('Check-in del día', info.map(x => {
+      if (x.d > today()) return cell('');
+      const miss = C.checkinMissing(x.c);
+      return cell(miss.length ? `Faltan ${miss.length}<br><span class="small">${esc(miss.join(', '))}</span>` : 'Completo ✓', miss.length ? 'bad' : 'good');
+    }), `<td class="avg">${info.filter(x => x.d <= today() && !C.checkinMissing(x.c).length).length}/${info.filter(x => x.d <= today()).length}</td>`);
     sec('Biofeedback');
     row('Peso en ayunas', info.map(x => cell(x.c ? (x.c.noPeso ? 'No se pesó' : (num(x.c.peso) ? nf(num(x.c.peso), 2) : '')) : '')), avgCell(info.map(x => (x.c && !x.c.noPeso ? num(x.c.peso) : null)), v => nf(v, 2) + ' kg'));
     row('Energía', info.map(x => { const v = x.c && x.c.energy; return cell(v ? { baja: 'Baja', promedio: 'Promedio', alta: 'Alta' }[v] : '', v === 'alta' ? 'good' : (v === 'baja' ? 'bad' : '')); }));
@@ -474,7 +480,8 @@
       const plan = x.plan ? `<span class="muted small">plan: ${ROUTINES[x.plan].name}</span>` : '<span class="muted small">Descanso</span>';
       return cell(done ? `${done}<br>${plan}` : plan, done ? 'good' : '');
     }));
-    row('Duración', info.map(x => cell(x.ses.map(s => `${Math.floor(s.minutes / 60) ? Math.floor(s.minutes / 60) + ' h ' : ''}${s.minutes % 60} m`).join('<br>'))));
+    // Más de 4 horas suele ser un entrenamiento que quedó abierto: se marca para revisarlo.
+    row('Duración', info.map(x => cell(x.ses.map(s => `${Math.floor(s.minutes / 60) ? Math.floor(s.minutes / 60) + ' h ' : ''}${s.minutes % 60} m${s.minutes > 240 ? ' <span class="small">(quedó abierto)</span>' : ''}`).join('<br>'), x.ses.some(s => s.minutes > 240) ? 'bad' : '')));
     row('Dificultad', info.map(x => cell(x.ses.filter(s => s.difficulty).map(s => s.difficulty + '/5').join('<br>'))));
     if (PAIN) row('Hombro al terminar', info.map(x => { const v = x.ses.map(s => s.shoulder).filter(n => n !== null && n !== undefined); return cell(v.map(n => n + '/10').join('<br>'), v.some(n => n >= 4) ? 'bad' : ''); }));
     row('Pasos / meta', info.map(x => { const v = x.c ? num(x.c.pasos) : null; return cell(v !== null ? `${nf(v, 0)}<span class="muted">/${nf(x.tg.steps, 0)}</span>` : '', v === null ? '' : (v >= x.tg.steps ? 'good' : (v < x.tg.steps * 0.7 ? 'bad' : ''))); }), avgCell(info.map(x => (x.c ? num(x.c.pasos) : null)), v => nf(v, 0)));

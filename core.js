@@ -248,10 +248,26 @@
     });
   }
 
+  // Datos que faltan en el check-in de un día. Todos son obligatorios, entrene o no ese día.
+  function checkinMissing(c) {
+    const pain = window.DATA.pain;
+    const has = v => v !== undefined && v !== null && String(v).trim() !== '';
+    const x = c || {};
+    const miss = [];
+    if (!has(x.pasos)) miss.push('pasos');
+    if (!has(x.sleepH)) miss.push('horas de sueño');
+    if (!has(x.sleepQ)) miss.push('calidad del sueño');
+    if (!has(x.adh)) miss.push('cumplimiento de la dieta');
+    if (!x.noPeso && !has(x.peso)) miss.push('peso (o «no me pesé»)');
+    if (pain && !has(x.hombro)) miss.push('dolor de ' + pain.label);
+    if (!has(x.energy)) miss.push('energía');
+    return miss;
+  }
+
   window.CORE = {
     DOW, DOW_LONG, MONTHS, pad, ymd, parse, today, addDays, dowIdx, mondayOf, daysBetween, fmtDay, fmtShort, nf, num, esc, avg,
     blockFor, totalWeeks, weekStart, RIR_SCHEMES, parseRir, defaultScheme, rirForSet, rirList,
     resolveEx, isBodyweight, flexDayHtml, kcalFieldsHtml, hasVariants, findExercise, setText, setsText, lastPerfIn, autoSuggest, scheduleFor, pullToRefresh,
-    presSets, presKgAt, hasKg, progressFrom, setDelta, mealsForDay, dayIntake, targetsFor, fmtM
+    presSets, presKgAt, hasKg, progressFrom, checkinMissing, setDelta, mealsForDay, dayIntake, targetsFor, fmtM
   };
 })();

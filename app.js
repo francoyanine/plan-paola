@@ -272,9 +272,7 @@
   }
 
   // ---------- Check-in ----------
-  function dayComplete(c) {
-    return !!(c && c.pasos !== undefined && c.pasos !== '' && c.sleepH !== undefined && c.sleepH !== '' && c.adh);
-  }
+  const dayComplete = c => !!c && CORE.checkinMissing(c).length === 0;
   const avg = arr => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null);
   function weekStats(monday) {
     const days = Array.from({ length: 7 }, (_, i) => addDays(monday, i));
@@ -451,7 +449,11 @@
     if (wkPlan && wkPlan.note) parts.push(`<div class="notice ok"><div><b>${esc(S.settings.coachName)} · semana ${b.week}:</b> ${esc(wkPlan.note)}</div></div>`);
 
     if (!dayComplete(S.checkins[t])) {
-      parts.push(`<a class="notice" href="#/checkin/${t}" style="text-decoration:none"><div><b>Registro de hoy pendiente.</b> Pasos, sueño y dieta. Toma menos de un minuto.</div></a>`);
+      parts.push(`<a class="notice" href="#/checkin/${t}" style="text-decoration:none"><div><b>Check-in de hoy pendiente.</b> Te falta: ${esc(CORE.checkinMissing(S.checkins[t]).join(', '))}. Va todos los días, entrenes o no.</div></a>`);
+    }
+    const pastMissing = Array.from({ length: dowIdx(t) }, (_, i) => addDays(monday, i)).filter(d => d >= S.settings.startDate && !dayComplete(S.checkins[d]));
+    if (pastMissing.length) {
+      parts.push(`<a class="notice" href="#/checkin/${pastMissing[0]}" style="text-decoration:none"><div><b>Días incompletos esta semana:</b> ${pastMissing.map(d => DOW_LONG[dowIdx(d)]).join(', ')}. Tócalo para completarlos.</div></a>`);
     }
 
     if (S.active) {
@@ -896,15 +898,15 @@
     const tg = targets(date);
     const html = `
       <div class="wk-head lower"><span class="eyebrow">Registro diario</span><span class="rname" style="font-size:1.8rem">${esc(fmtDay(date).charAt(0).toUpperCase() + fmtDay(date).slice(1))}</span>
-      <p class="small muted">Se guarda solo mientras escribes.</p></div>
+      <p class="small muted">Todos los datos son obligatorios, entrenes o no. Se guarda solo mientras escribes.</p></div>
       <section class="card form">
-        <div class="q"><label for="ci-pasos">Pasos <span class="key">CLAVE</span><span class="hint">meta ${nf(tg.steps, 0)}</span></label>
+        <div class="q"><label for="ci-pasos">Pasos <span class="hint">meta ${nf(tg.steps, 0)}</span></label>
           <div class="inp-u"><input class="inp" id="ci-pasos" inputmode="numeric" pattern="[0-9]*" data-ci="pasos" data-d="${date}" value="${esc(c.pasos)}" placeholder="0"><span class="u">pasos</span></div></div>
-        <div class="q"><span class="ql">Sueño de anoche <span class="key">CLAVE</span></span>
+        <div class="q"><span class="ql">Sueño de anoche</span>
           <div class="two"><div class="inp-u"><input class="inp" id="ci-sh" inputmode="numeric" pattern="[0-9]*" data-ci="sleepH" data-d="${date}" value="${esc(c.sleepH)}" placeholder="7" aria-label="Horas de sueño"><span class="u">h</span></div>
           <div class="inp-u"><input class="inp" id="ci-sm" inputmode="numeric" pattern="[0-9]*" data-ci="sleepM" data-d="${date}" value="${esc(c.sleepM)}" placeholder="0" aria-label="Minutos de sueño"><span class="u">min</span></div></div></div>
         <div class="q"><span class="ql">Calidad del sueño</span>${scaleButtons('sleepQ', 1, 5, c.sleepQ, date)}<div class="scale-ends"><span>Muy mala</span><span>Excelente</span></div></div>
-        <div class="q"><span class="ql">Cumplimiento de la dieta <span class="key">CLAVE</span><span class="hint">10 = todo pesado y según el plan</span></span>${scaleButtons('adh', 1, 10, c.adh, date)}</div>
+        <div class="q"><span class="ql">Cumplimiento de la dieta <span class="hint">10 = todo pesado y según el plan</span></span>${scaleButtons('adh', 1, 10, c.adh, date)}</div>
         <div class="q"><label for="ci-peso">Peso en ayunas <span class="hint">después del baño</span></label>
           ${c.noPeso ? `<p class="muted">Hoy no te pesaste.</p>` : `<div class="inp-u"><input class="inp" id="ci-peso" inputmode="decimal" data-ci="peso" data-d="${date}" value="${esc(c.peso)}" placeholder="56,0"><span class="u">kg</span></div>`}
           <button type="button" class="linkbtn" data-a="ci-set" data-k="noPeso" data-v="${c.noPeso ? '' : '1'}" data-d="${date}">${c.noPeso ? 'Sí me pesé' : 'No me pesé hoy'}</button></div>
@@ -912,6 +914,7 @@
         <div class="q"><span class="ql">Energía</span>${segButtons('energy', ENERGY, c.energy, date)}</div>
         <div class="q"><label for="ci-nota">Nota del día</label><textarea id="ci-nota" data-ci="nota" data-d="${date}" placeholder="Algo fuera de lo común, cómo te sentiste…">${esc(c.nota)}</textarea></div>
       </section>
+      ${dayComplete(c) ? '<div class="notice ok"><div><b>Día completo.</b> Gracias.</div></div>' : `<div class="notice"><div><b>Te falta:</b> ${esc(CORE.checkinMissing(c).join(', '))}.</div></div>`}
       <a class="btn block lower" href="#/checkin">${dayComplete(c) ? 'Listo' : 'Volver'}</a>`;
     return { title: 'Check-in', back: '#/checkin', html };
   }
@@ -1170,9 +1173,9 @@
       const kg = val('dkg-' + exId), reps = val('dreps-' + exId), rir = val('drir-' + exId);
       if (!reps || !(num(reps) > 0)) { toast(rx.type === 'time' ? 'Anota los segundos' : 'Anota las repeticiones'); const i = document.getElementById('dreps-' + exId); if (i) i.focus(); return; }
       if (rir && !(num(rir) >= 0 && num(rir) <= 5)) { toast('El RIR va de 0 a 5'); return; }
-      const set = { kg, reps, rir };
+      const set = { kg, reps, rir, at: Date.now() };
       if (el.dataset.kind === 'warm') {
-        e.warm.push({ kg, reps });
+        e.warm.push({ kg, reps, at: Date.now() });
       } else {
         e.sets.push(set);
         e.more = false;
@@ -1261,6 +1264,8 @@
     },
     'post-save': () => {
       const a = S.active; if (!a) return;
+      if (!a.post || !a.post.difficulty) { toast('Marca qué tan difícil fue'); return; }
+      if (PAIN && (a.post.shoulder === undefined || a.post.shoulder === null)) { toast(`Marca la molestia en ${PAIN.label === 'hombro' ? 'el hombro' : PAIN.label} (0 si no hubo)`); return; }
       const ex = {};
       Object.entries(a.ex).forEach(([id, e]) => {
         normEntry(e);
@@ -1269,9 +1274,12 @@
         ex[id] = { alt: e.alt, histKey: e.histKey, name: e.name, sets, warm, note: e.note.trim(), setup: getSetup(e.histKey) };
       });
       const finishedAt = Date.now();
+      // Si quedó abierto después de la última serie, la duración se corta 5 minutos después de esa serie.
+      const lastAt = Math.max(0, ...Object.values(a.ex).flatMap(e => e.sets.concat(e.warm).map(x => x.at || 0)));
+      const endAt = lastAt ? Math.min(finishedAt, lastAt + 5 * 60000) : finishedAt;
       const s = {
         id: 's' + finishedAt, routine: a.routine, date: a.date, week: a.week, startedAt: a.startedAt, finishedAt,
-        minutes: Math.max(1, Math.round((finishedAt - a.startedAt) / 60000)), ex,
+        minutes: Math.max(1, Math.round((endAt - a.startedAt) / 60000)), ex,
         difficulty: a.post.difficulty || null, shoulder: a.post.shoulder != null ? a.post.shoulder : null
       };
       S.sessions.push(s);
