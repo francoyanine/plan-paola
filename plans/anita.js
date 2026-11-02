@@ -58,10 +58,10 @@
   // Macros por fase. Si el coach cambia las calorías, los carbohidratos se recalculan.
   // Semanas 1–4 recomposición, 5–9 definición, 10 en adelante mantención (vacaciones de verano).
   const PHASES = {
-    pre: { name: 'Antes de empezar', short: 'Pre', macros: { p: 120, g: 52 }, kcalKey: 'recomp' },
-    recomp: { name: 'Recomposición', short: 'Recomp', weeks: 4, macros: { p: 120, g: 52 }, kcalKey: 'recomp', steps: 8000 },
-    cut: { name: 'Definición', short: 'Definición', weeks: 5, macros: { p: 120, g: 48 }, kcalKey: 'cut', steps: 9000 },
-    maint: { name: 'Mantención', short: 'Mantención', macros: { p: 115, g: 55 }, kcalKey: 'recomp', steps: 8000 }
+    pre: { name: 'Antes de empezar', short: 'Pre', macros: { p: 120, g: 52 }, kcalKey: 'recomp', steps: 7000 },
+    recomp: { name: 'Recomposición', short: 'Recomp', weeks: 4, macros: { p: 120, g: 52 }, kcalKey: 'recomp', steps: 7000 },
+    cut: { name: 'Definición', short: 'Definición', weeks: 5, macros: { p: 120, g: 48 }, kcalKey: 'cut', steps: 7000 },
+    maint: { name: 'Mantención', short: 'Mantención', macros: { p: 115, g: 55 }, kcalKey: 'recomp', steps: 7000 }
   };
 
   // Día tipo. Valores por porción: kcal, p (proteína), g (grasa), c (carbohidratos disponibles).
@@ -72,7 +72,7 @@
   // Anita no pesa la comida: cada porción dice entre paréntesis cómo se ve a simple vista (mano, puño, palma).
   // No come jamón de pavo ni aceite de oliva. Los fideos solo van en el almuerzo.
   // Las colaciones son las que lleva al trabajo y va rotando (etiquetas en foods.js, src: etiqueta).
-  const PAN_ALTS = ['Hallulla', 'Pan amasado', 'Pan de molde integral', 'Pan pita', 'Tortilla siria multigrano Assanabel', 'Tortilla de harina (wrap)', 'Galletas de arroz'];
+  const PAN_ALTS = ['Hallulla', 'Pan amasado', 'Pan de molde integral', 'Pan pita', 'Tortilla de harina (wrap)', 'Galletas de arroz'];
   const COLACION_LACTEO = ['Yogur Protein+ (Soprole)', 'Leche Protein+ cacao (Soprole)', 'Leche Protein+ sabor (Soprole)', 'Yogur griego natural descremado', 'Queso cottage', 'Quesillo'];
   const PROTEINA_NOCHE = ['Huevo duro', 'Clara de huevo', 'Jamón de cerdo', 'Carne molida 5 % grasa, cruda', 'Pechuga de pollo, cruda', 'Atún en agua, drenado',
     'Pescado blanco (merluza, reineta), crudo', 'Posta negra o rosada, cruda', 'Lomo de cerdo, crudo', 'Hamburguesa vegetal (Impossible)', 'Quesillo', 'Queso cottage'];
@@ -84,7 +84,7 @@
         { id: 'd2', name: 'Jamón de cerdo', qty: '2 láminas finas, 40 g (como lo que cubre tu palma, apiladas dos veces)', kcal: 66, p: 7, g: 4, c: 1, fixed: true, cat: 'proteina',
           alts: ['Huevo duro', 'Quesillo', 'Queso cottage'] },
         { id: 'd3', name: 'Queso gauda o mantecoso', qty: '2 láminas, 40 g (del tamaño de la palma, finas como un dedo meñique)', kcal: 142, p: 10, g: 11, c: 1, fixed: true, cat: 'lacteo',
-          alts: ['Queso chanco', 'Queso Hulgo', 'Queso mozzarella light', 'Quesillo'] },
+          alts: ['Queso chanco', 'Queso mozzarella light', 'Quesillo'] },
         { id: 'd4', name: 'Té sin azúcar', qty: 'a gusto', kcal: 0, p: 0, g: 0, c: 0, free: true }
       ]
     },
@@ -123,27 +123,28 @@
           alts: PAN_ALTS },
         { id: 'o2', name: 'Huevos enteros', qty: '3 unidades, 150 g (revueltos se ven como 1 puño y medio)', kcal: 215, p: 19, g: 14, c: 1, fixed: true, cat: 'proteina',
           alts: PROTEINA_NOCHE },
-        { id: 'o3', name: 'Palta', qty: '40 g (¼ de palta mediana)', kcal: 64, p: 1, g: 6, c: 1, fixed: true, cat: 'grasa',
-          alts: ['Aceitunas', 'Almendras', 'Nueces'] },
         { id: 'o4', name: 'Verduras en ensalada', qty: 'a gusto (un cuarto del plato)', kcal: 0, p: 0, g: 0, c: 0, free: true }
       ]
     }
   ];
 
   const NUTRITION_TIPS = [
-    'No necesitas pesar. Usa tu mano: la palma (sin dedos) es una porción de carne, pollo o pescado; el puño cerrado es una porción de arroz, fideos o papa ya cocidos; el pulgar es una porción de grasa (¼ de palta).',
+    'No necesitas pesar. Usa tu mano: la palma (sin dedos) es una porción de carne, pollo o pescado; el puño cerrado es una porción de arroz, fideos o papa ya cocidos; la palma ahuecada es un puñado de cereal o frutos secos.',
     'Las cantidades entre paréntesis son para verlas a simple vista. Si quieres cambiar un alimento, toca su nombre y la app te da los gramos equivalentes.',
     'Para la noche, en lugar de 3 huevos (≈19 g de proteína): 150 g de huevo duro (3 unidades), 114 g de jamón (≈6 láminas), 88 g de carne molida magra cruda (una hamburguesa chica), 84 g de pechuga de pollo cruda, 74 g de atún en agua (½ lata), 106 g de pescado blanco crudo, 145 g de quesillo, o 1 hamburguesa vegetal Impossible (113 g).',
     'Para el almuerzo, en lugar de 55 g de arroz crudo (1 puño de arroz cocido): 150 g de fideos cocidos (1 puño y medio), 240 g de papa cocida (2 papas medianas), 220 g de garbanzos cocidos (1 taza), 80 g de lentejas crudas o 75 g de quínoa cruda.',
-    'Para el pan de la noche, en lugar de ½ marraqueta (60 g): 1 hallulla chica (60 g), 1 pan pita (60 g), 1 tortilla siria (65 g), 3 rebanadas de pan de molde integral (90 g) o 4 galletas de arroz (45 g).',
+    'Para el pan de la noche, en lugar de ½ marraqueta (60 g): 1 hallulla chica (60 g), 1 pan pita (60 g), 3 rebanadas de pan de molde integral (90 g) o 4 galletas de arroz (45 g).',
     'Colaciones: yogur Protein+ con Golden Crunchy, o leche Protein+ con una fruta, o la barra Wild Foods sola (179 kcal, 15 g de proteína) en lugar de leche y fruta. Que lleven proteína y un carbohidrato, y varía entre ellas.',
     'Verduras, ensaladas y té: libres. Néctar Livean y bebidas light: libres, son para la sed, no cuentan como colación. Una copa de vino de 150 ml son ≈125 kcal y se registra.'
   ];
 
     // Página «Plan y reglas» (Más → Plan y reglas). k = calorías por fase, coach = nombre del coach.
-    const guide = (k, coach, nf) => `<section class="card prose"><h2>Las fases</h2><ul>
+    const guide = (k, coach, nf) => `<section class="card prose"><h2>Cada día</h2><ul>
+          <li><b>Pasos:</b> la meta es de 7.000 pasos diarios, todos los días de la semana.</li>
+          <li><b>Pesarse:</b> todos los días, apenas te levantes y después de ir al baño, antes de comer o tomar líquidos. Siempre en la misma balanza y con poca ropa.</li></ul></section>
+        <section class="card prose"><h2>Las fases</h2><ul>
           <li><b>Semanas 1–4, recomposición:</b> ${nf(k.recomp, 0)} kcal, cerca de tu mantención. Las semanas 1–2 son de adaptación, con todas las series a RIR 2.</li>
-          <li><b>Semanas 5–9, definición:</b> ${nf(k.cut, 0)} kcal y más pasos. El objetivo es bajar 0,2–0,4 kg por semana sin perder fuerza.</li>
+          <li><b>Semanas 5–9, definición:</b> ${nf(k.cut, 0)} kcal. El objetivo es bajar 0,2–0,4 kg por semana sin perder fuerza.</li>
           <li><b>Semana 10, vacaciones:</b> vuelves a mantención para llegar bien al verano.</li></ul></section>
         <section class="card prose"><h2>Cómo se entrena</h2><ul>
           <li><b>RIR</b> son las repeticiones que quedan en reserva. RIR 1 = podrías hacer una más con buena técnica, pero no dos.</li>
@@ -153,7 +154,7 @@
           <li><b>Calentamiento:</b> 5 min suaves y series de aproximación en el primer ejercicio de cada grupo.</li>
           <li><b>Técnica:</b> bajar en 2–3 s, recorrido completo, sin rebotes. Una repetición con mala técnica no cuenta.</li></ul></section>
         <section class="card prose"><h2>Cómo se ajusta</h2><ul>
-          <li><b>Pesarse:</b> en ayunas, y se mira el promedio de la semana, no un día suelto.</li>
+          <li><b>Peso:</b> se mira el promedio de la semana, no un día suelto.</li>
           <li><b>Recomposición:</b> si después de 2 semanas el promedio no ha bajado nada, −100 kcal o +2.000 pasos. Si baja más de 0,4 kg por semana, +100 kcal.</li>
           <li><b>Definición:</b> si baja menos de 0,2 kg por semana durante 2 semanas, −100 kcal o +2.000 pasos. Si baja más de 0,5 kg o las cargas caen, +100 kcal.</li></ul></section>`;
 
