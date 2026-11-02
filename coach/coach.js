@@ -1,9 +1,9 @@
 'use strict';
 
-// App de coach: arma la progresión semanal (carga y RIR por ejercicio), la envía a la app de Paola
-// y muestra la planilla de progreso con lo que ella registra.
+// App de coach: arma la progresión semanal (carga y RIR por ejercicio), la envía a la app de cada persona
+// y muestra la planilla de progreso con lo que registra. El plan (rutinas, comidas) depende de la persona elegida.
 (function () {
-  const { ROUTINES, ROUTINE_ORDER } = window.DATA;
+  const { ROUTINES, ROUTINE_ORDER, schedule: PLAN_SCHEDULE, kcal: PLAN_KCAL, pain: PAIN } = window.DATA;
   const C = window.CORE;
   const { esc, nf, num, today, addDays, fmtDay, fmtShort, mondayOf, DOW } = C;
 
@@ -21,7 +21,6 @@
   let loading = false;
   let loadError = '';
   let loadedAt = null;
-  let planillaTab = 'LA';
 
   const lsGet = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
   const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* opcional */ } };
@@ -31,9 +30,9 @@
     const s = (A && A.settings) || {};
     return {
       startDate: s.startDate || null,
-      upperDay: s.upperDay || 'mar',
+      upperDay: s.upperDay || (PLAN_SCHEDULE.flex ? PLAN_SCHEDULE.flex.defaultId : ''),
       coachName: s.coachName || 'Franco',
-      kcal: Object.assign({ recomp: 1800, cut: 1500 }, s.kcal || {}),
+      kcal: Object.assign({}, PLAN_KCAL.defaults, s.kcal || {}),
       swaps: Object.assign({}, s.swaps || {}),
       inc: Object.assign({}, s.inc || {})
     };
@@ -51,6 +50,8 @@
       athletes = aths || [];
       const saved = lsGet('plan-coach-athlete');
       A = athletes.find(a => a.id === saved) || athletes[0] || null;
+      // Cada persona tiene su plan: si el cargado no es el de ella, se cambia y la app se recarga.
+      if (A && window.DATA.switchPlan((A.settings || {}).plan || 'paola')) return;
       if (A) await loadAthlete();
       loadError = '';
       loadedAt = Date.now();
@@ -84,7 +85,7 @@
     const { error } = await sb.from('athletes').update({ settings: next, updated_at: new Date().toISOString() }).eq('id', A.id);
     if (error) { toast('No se pudo guardar: ' + error.message); return false; }
     A.settings = next;
-    toast('Guardado. Paola lo ve al abrir su app.');
+    toast(`Guardado. ${A.name} lo ve al abrir su app.`);
     return true;
   }
 
@@ -225,7 +226,7 @@
   function viewNoAthlete() {
     return {
       title: 'Coach', html: `<section class="card"><h3>No tienes atletas conectadas</h3>
-        <p class="muted">Entraste como ${esc(user.email)}. Corre el archivo supabase/link-athlete.sql en el SQL Editor de Supabase con tu correo y el de Paola, y vuelve a cargar.</p>
+        <p class="muted">Entraste como ${esc(user.email)}. Corre el archivo supabase/link-athlete.sql en el SQL Editor de Supabase con tu correo y el de la persona, y vuelve a cargar.</p>
         <button class="btn block" data-a="reload">Volver a cargar</button>
         <button class="btn block danger" data-a="logout">Cerrar sesión</button></section>`
     };
@@ -261,7 +262,7 @@
       <div class="stat"><span class="k">Pasos</span><span class="v">${fmtN(cs.pasos, 0)}</span><span class="s">promedio diario</span></div>
       <div class="stat"><span class="k">Sueño</span><span class="v">${fmtSleep(cs.sleep)}</span><span class="s">${cs.sleepQ !== null ? 'calidad ' + nf(cs.sleepQ, 1) + '/5' : 'promedio'}</span></div>
       <div class="stat"><span class="k">Dieta</span><span class="v">${fmtN(cs.adh)}</span><span class="s">cumplimiento /10</span></div>
-      <div class="stat"><span class="k">Hombro</span><span class="v">${fmtN(cs.hombro)}</span><span class="s">dolor promedio /10</span></div>
+      ${PAIN ? `<div class="stat"><span class="k">${esc(PAIN.label)}</span><span class="v">${fmtN(cs.hombro)}</span><span class="s">dolor promedio /10</span></div>` : ''}
       <div class="stat"><span class="k">Entrenos</span><span class="v">${wkSessions.length}</span><span class="s">${cs.registered}/7 días con check-in</span></div>
     </div></section>`);
 
@@ -395,13 +396,15 @@
       const badge = auto || (C.hasKg(p) ? null : hint);
       const prevRef = i => C.presKgAt((editing[w - 1] || draftOf(w - 1)).exercises[ex.id], i);
       ed.push(`<div class="edtop">${badge ? `<span class="act ${badge[0]}">${badge[1]}</span>` : '<span></span>'}${!C.hasKg(p) && prog ? `<span class="muted">sugerido ${nf(prog.kgs[0], 2)} kg</span>` : ''}</div>`);
-      ed.push(`<div class="kgs">${Array.from({ length: sets }, (_, i) => {
-        const v = C.presKgAt(p, i);
-        const ref = prevRef(i);
-        const diff = v !== null && ref !== null ? Math.round((v - ref) * 100) / 100 : 0;
-        return `<label class="kgcell"><span class="muted">S${i + 1}${diff ? ` <i class="${diff > 0 ? 'pos' : 'neg'}">${diff > 0 ? '↑' : '↓'}${nf(Math.abs(diff), 2)}</i>` : ''}</span>
-          <input inputmode="decimal" autocomplete="off" data-cw="${w}" data-cex="${ex.id}" data-cf="kg${i}" value="${esc(kgTxt(v).replace('.', ','))}" placeholder="${prog ? nf(prog.kgs[i], 2) : 'kg'}" aria-label="Kilos serie ${i + 1}, semana ${w}"></label>`;
-      }).join('')}</div>`);
+      // Series lineales: un peso para todas las series. Si una semana ya enviada trae pesos distintos, se muestran y se igualan al editar.
+      const v = C.presKgAt(p, 0);
+      const ref = prevRef(0);
+      const diff = v !== null && ref !== null ? Math.round((v - ref) * 100) / 100 : 0;
+      const perSet = Array.from({ length: sets }, (_, i) => C.presKgAt(p, i));
+      const uneven = perSet.some(x => x !== perSet[0]);
+      ed.push(`<label class="kgcell one"><span class="muted">Kg · todas las series${diff ? ` <i class="${diff > 0 ? 'pos' : 'neg'}">${diff > 0 ? '↑' : '↓'}${nf(Math.abs(diff), 2)}</i>` : ''}</span>
+        <input inputmode="decimal" autocomplete="off" data-cw="${w}" data-cex="${ex.id}" data-cf="kg" value="${esc(kgTxt(v).replace('.', ','))}" placeholder="${prog ? nf(prog.kgs[0], 2) : 'kg'}" aria-label="Kilos, semana ${w}"></label>
+        ${uneven ? `<span class="uneven">Enviado por serie: ${perSet.map((x, i) => `S${i + 1} ${x === null ? '—' : nf(x, 2)}`).join(' · ')}</span>` : ''}`);
     }
     ed.push(`<div class="sr"><label><span class="muted">Series</span><input inputmode="numeric" data-cw="${w}" data-cex="${ex.id}" data-cf="sets" value="${esc(p.sets || '')}" placeholder="${rx.sets}" aria-label="Series"></label>
       ${rx.type === 'time' ? '' : `<label><span class="muted">RIR</span><input data-cw="${w}" data-cex="${ex.id}" data-cf="rir" value="${esc(p.rir || '')}" placeholder="${C.defaultScheme(w)}" maxlength="5" aria-label="RIR"></label>`}</div>`);
@@ -410,29 +413,31 @@
     return `<td class="pc ${w === cw ? 'cur' : ''}">${parts.join('')}</td>`;
   }
 
-  function viewPlanilla(arg) {
-    if (arg && ROUTINES[arg]) planillaTab = arg;
+  function viewPlanilla() {
     const st = settings();
-    if (!st.startDate) return { title: 'Planilla', html: `<a class="notice" href="#/ajustes" style="text-decoration:none"><div><b>Falta la fecha de inicio.</b> Defínela en Ajustes.</div></a>` };
+    if (!st.startDate) return { title: 'Planilla', html: `<a class="notice" href="#/ajustes" style="text-decoration:none"><div><b>Falta la fecha de inicio de ${esc(A.name)}.</b> Defínela en Ajustes.</div></a>` };
     const ws = planillaWeeks();
     const cw = currentWeek();
-    const r = ROUTINES[planillaTab];
-    const tabs = ROUTINE_ORDER.map(t => `<a href="#/planilla/${t}" class="${planillaTab === t ? 'on' : ''}">${ROUTINES[t].name}</a>`).join('');
+    const incs = [0, 1.25, 2.5, 5, 10];
+    const jump = ROUTINE_ORDER.map(t => `<a href="#" data-a="jump" data-r="${t}">${ROUTINES[t].name}</a>`).join('');
     const head = `<tr><th class="stick exh">Ejercicio</th>${ws.map(w => weekHeaderCell(w, cw)).join('')}</tr>`;
-    const body = r.exercises.map(ex => {
-      const rx = C.resolveEx(ex, !!st.swaps[ex.id]);
-      const inc = incFor(ex, rx);
-      const incs = [0, 1.25, 2.5, 5, 10];
-      const left = `<th class="stick exn"><b>${esc(rx.name)}</b><span class="muted">${esc(rx.group)}${rx.alt ? ' · variante hombro' : ''}</span>
-        <a class="linkbtn" href="${esc(rx.video || 'https://www.youtube.com/results?search_query=' + encodeURIComponent(rx.name + ' técnica'))}" target="_blank" rel="noopener">Ver video</a>
-        ${rx.type === 'time' || !rx.inc ? '<span class="muted small">Sin carga</span>' : `<span class="muted small">Progresión kg</span>
-        <div class="incs">${incs.map(v => `<button class="${inc === v ? 'on' : ''}" data-a="set-inc" data-ex="${ex.id}" data-v="${v}">${nf(v, 2)}</button>`).join('')}<input class="mini" data-inc="${ex.id}" value="${incs.includes(inc) ? '' : nf(inc, 2)}" placeholder="otro" aria-label="Otro incremento"></div>`}</th>`;
-      return `<tr>${left}${ws.map(w => planCell(r, ex, w, cw)).join('')}</tr>`;
+    const body = ROUTINE_ORDER.map(rid => {
+      const r = ROUTINES[rid];
+      const secRow = `<tr class="rsec" id="rsec-${rid}"><th class="stick">${r.name}<span class="muted"> · ${esc(r.day)}</span></th><td colspan="${ws.length}"></td></tr>`;
+      return secRow + r.exercises.map(ex => {
+        const rx = C.resolveEx(ex, !!st.swaps[ex.id]);
+        const inc = incFor(ex, rx);
+        const left = `<th class="stick exn"><b>${esc(rx.name)}</b><span class="muted">${esc(rx.group)}${rx.alt ? ' · variante' : ''}</span>
+          <a class="linkbtn" href="${esc(rx.video || 'https://www.youtube.com/results?search_query=' + encodeURIComponent(rx.name + ' técnica'))}" target="_blank" rel="noopener">Ver video</a>
+          ${rx.type === 'time' || !rx.inc ? '<span class="muted small">Sin carga</span>' : `<span class="muted small">Progresión kg</span>
+          <div class="incs">${incs.map(v => `<button class="${inc === v ? 'on' : ''}" data-a="set-inc" data-ex="${ex.id}" data-v="${v}">${nf(v, 2)}</button>`).join('')}<input class="mini" data-inc="${ex.id}" value="${incs.includes(inc) ? '' : nf(inc, 2)}" placeholder="otro" aria-label="Otro incremento"></div>`}</th>`;
+        return `<tr>${left}${ws.map(w => planCell(r, ex, w, cw)).join('')}</tr>`;
+      }).join('');
     }).join('');
-    const html = `<div class="ptools"><div class="seg-links">${tabs}</div>
+    const html = `<div class="ptools"><div class="seg-links"><span class="small muted">Ir a:</span>${jump}</div>
         <div class="row"><span class="small muted" data-saving>${pendingWeeks().length ? 'Guardando…' : 'Los cambios se guardan solos'}</span><button class="btn small upper" data-a="calc-prog">Calcular progresiones</button></div></div>
       <section class="card flush"><div class="sheet-scroll"><table class="grid plan">${head}${body}</table></div></section>
-      <p class="small muted">Cada celda muestra arriba lo indicado y lo que registró ${esc(A.name)}, con la diferencia frente a la vez anterior. Abajo se edita la semana: kilos por serie, series, RIR y nota. «Calcular progresiones» rellena las cargas vacías de esta semana y la próxima: sube el incremento elegido si llegó al tope del rango y baja si quedó bajo el mínimo. Nada le llega hasta que toques «Enviar semana».</p>`;
+      <p class="small muted">Están todas las rutinas de la semana. «Enviar semana N» manda las cuatro de una vez. Las series son lineales: un mismo peso para todas las series del ejercicio. «Calcular progresiones» rellena las cargas vacías de esta semana y la próxima: sube el incremento elegido si todas las series llegaron al tope del rango, baja si el promedio quedó bajo el mínimo y si no mantiene. Nada le llega hasta que toques «Enviar semana».</p>`;
     return { title: 'Planilla', html, wide: true };
   }
 
@@ -462,7 +467,7 @@
     sec('Biofeedback');
     row('Peso en ayunas', info.map(x => cell(x.c ? (x.c.noPeso ? 'No se pesó' : (num(x.c.peso) ? nf(num(x.c.peso), 2) : '')) : '')), avgCell(info.map(x => (x.c && !x.c.noPeso ? num(x.c.peso) : null)), v => nf(v, 2) + ' kg'));
     row('Energía', info.map(x => { const v = x.c && x.c.energy; return cell(v ? { baja: 'Baja', promedio: 'Promedio', alta: 'Alta' }[v] : '', v === 'alta' ? 'good' : (v === 'baja' ? 'bad' : '')); }));
-    row('Dolor de hombro', info.map(x => { const v = x.c ? num(x.c.hombro) : null; return cell(v !== null ? v + '/10' : '', v === null ? '' : (v >= 4 ? 'bad' : (v <= 1 ? 'good' : ''))); }), avgCell(info.map(x => (x.c ? num(x.c.hombro) : null)), v => nf(v, 1)));
+    if (PAIN) row('Dolor de hombro', info.map(x => { const v = x.c ? num(x.c.hombro) : null; return cell(v !== null ? v + '/10' : '', v === null ? '' : (v >= 4 ? 'bad' : (v <= 1 ? 'good' : ''))); }), avgCell(info.map(x => (x.c ? num(x.c.hombro) : null)), v => nf(v, 1)));
     sec('Entrenamiento');
     row('Entrenamiento (hecho / plan)', info.map(x => {
       const done = x.ses.map(s => `${ROUTINES[s.routine].name} ✓`).join('<br>');
@@ -471,7 +476,7 @@
     }));
     row('Duración', info.map(x => cell(x.ses.map(s => `${Math.floor(s.minutes / 60) ? Math.floor(s.minutes / 60) + ' h ' : ''}${s.minutes % 60} m`).join('<br>'))));
     row('Dificultad', info.map(x => cell(x.ses.filter(s => s.difficulty).map(s => s.difficulty + '/5').join('<br>'))));
-    row('Hombro al terminar', info.map(x => { const v = x.ses.map(s => s.shoulder).filter(n => n !== null && n !== undefined); return cell(v.map(n => n + '/10').join('<br>'), v.some(n => n >= 4) ? 'bad' : ''); }));
+    if (PAIN) row('Hombro al terminar', info.map(x => { const v = x.ses.map(s => s.shoulder).filter(n => n !== null && n !== undefined); return cell(v.map(n => n + '/10').join('<br>'), v.some(n => n >= 4) ? 'bad' : ''); }));
     row('Pasos / meta', info.map(x => { const v = x.c ? num(x.c.pasos) : null; return cell(v !== null ? `${nf(v, 0)}<span class="muted">/${nf(x.tg.steps, 0)}</span>` : '', v === null ? '' : (v >= x.tg.steps ? 'good' : (v < x.tg.steps * 0.7 ? 'bad' : ''))); }), avgCell(info.map(x => (x.c ? num(x.c.pasos) : null)), v => nf(v, 0)));
     sec('Nutrición');
     row('Cumplimiento (1–10)', info.map(x => { const v = x.c ? num(x.c.adh) : null; return cell(v !== null ? v + '/10' : '', v === null ? '' : (v >= 8 ? 'good' : (v <= 5 ? 'bad' : ''))); }), avgCell(info.map(x => (x.c ? num(x.c.adh) : null)), v => nf(v, 1)));
@@ -524,7 +529,7 @@
     const html = `<div class="wk-head ${r.kind}"><span class="eyebrow">${esc(fmtDay(s.date))} · semana ${s.week}</span><span class="rname">${r.name}</span></div>
       <div class="stats"><div class="stat"><span class="k">Duración</span><span class="v">${s.minutes} min</span></div>
       <div class="stat"><span class="k">Dificultad</span><span class="v">${s.difficulty || '—'}/5</span></div>
-      <div class="stat"><span class="k">Hombro</span><span class="v">${s.shoulder != null ? s.shoulder : '—'}/10</span></div>
+      ${PAIN ? `<div class="stat"><span class="k">${esc(PAIN.label)}</span><span class="v">${s.shoulder != null ? s.shoulder : '—'}/10</span></div>` : ''}
       <div class="stat"><span class="k">Series</span><span class="v">${Object.values(s.ex).reduce((a, e) => a + e.sets.length, 0)}</span></div></div>
       <section class="card flush"><div class="list">${rows}</div></section>`;
     return { title: 'Sesión', back: '#/registros', html };
@@ -540,14 +545,11 @@
     const picker = athletes.length > 1 ? `<div class="q"><label for="c-ath">Atleta</label><select class="inp" id="c-ath">${athletes.map(a => `<option value="${a.id}" ${a.id === A.id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></div>` : '';
     const html = `<section class="card form"><h3>Plan de ${esc(A.name)}</h3>${picker}
         <div class="q"><label for="c-start">Fecha de inicio (lunes de la semana 1)</label><input class="inp" type="date" id="c-start" value="${st.startDate || ''}"></div>
-        <div class="q"><span class="ql">Día del Upper A</span><div class="seg">
-          <button type="button" class="${st.upperDay === 'mar' ? 'on' : ''}" data-a="upper-day" data-v="mar">Martes</button>
-          <button type="button" class="${st.upperDay === 'mie' ? 'on' : ''}" data-a="upper-day" data-v="mie">Miércoles</button></div></div>
-        <div class="two"><div class="q"><label for="c-kr">Recomposición</label><div class="inp-u"><input class="inp" id="c-kr" inputmode="numeric" value="${st.kcal.recomp}" data-kcal="recomp"><span class="u">kcal</span></div></div>
-        <div class="q"><label for="c-kc">Mini cut</label><div class="inp-u"><input class="inp" id="c-kc" inputmode="numeric" value="${st.kcal.cut}" data-kcal="cut"><span class="u">kcal</span></div></div></div>
+        ${C.flexDayHtml(st.upperDay)}
+        ${C.kcalFieldsHtml(st.kcal)}
         <div class="q"><label for="c-name">Tu nombre en su app</label><input class="inp" id="c-name" value="${esc(st.coachName)}"></div>
       </section>
-      <section class="card flush"><div style="padding:14px 16px 4px" class="stack"><h3>Variantes para el hombro</h3><p class="small muted">Se aplican desde su próximo entrenamiento.</p></div><div class="list">${swapRows}</div></section>
+      ${C.hasVariants() ? `<section class="card flush"><div style="padding:14px 16px 4px" class="stack"><h3>${esc(PAIN ? PAIN.variantsTitle : 'Variantes de ejercicios')}</h3><p class="small muted">Se aplican desde su próximo entrenamiento.</p></div><div class="list">${swapRows}</div></section>` : ''}
       <section class="card"><p class="small muted">Entraste como ${esc(user.email)}.${loadedAt ? ' Datos cargados a las ' + new Date(loadedAt).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' }) + '.' : ''}</p>
         <a class="btn block ghost" href="../">Abrir la app de ${esc(A.name)}</a>
         <button class="btn block danger" data-a="logout">Cerrar sesión</button></section>`;
@@ -687,6 +689,7 @@
         <button class="btn block ghost" data-a="close-sheet">Cerrar</button>`);
     },
     'close-sheet': () => closeSheet(),
+    jump: el => { const row = document.getElementById('rsec-' + el.dataset.r); if (row) row.scrollIntoView({ behavior: 'smooth', block: 'start' }); },
     'upper-day': el => { saveSettings({ upperDay: el.dataset.v }).then(ok => ok && render()); },
     swap: el => {
       const swaps = Object.assign({}, settings().swaps);
@@ -712,15 +715,13 @@
       if (f === 'rir') t.classList.toggle('bad', !!v && !C.parseRir(v));
       editDraft(cw, d => {
         const p = d.exercises[id] = d.exercises[id] || {};
-        if (f.startsWith('kg')) {
-          const n = C.presSets(p, rx);
-          const arr = Array.from({ length: n }, (_, i) => C.presKgAt(p, i));
-          arr[Number(f.slice(2))] = v === '' ? null : num(v);
-          setKgs(p, arr);
+        if (f === 'kg') {
+          setKgs(p, Array(C.presSets(p, rx)).fill(v === '' ? null : num(v)));
           delete p.auto;
         } else if (f === 'sets') {
           const n = parseInt(v, 10);
           if (n > 0 && n <= 8) p.sets = n; else delete p.sets;
+          if (C.hasKg(p)) setKgs(p, Array(C.presSets(p, rx)).fill(C.presKgAt(p, 0)));
         } else if (f === 'rir') {
           p.rir = v.replace(/\s/g, '');
         } else if (f === 'note') {

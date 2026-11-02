@@ -1,9 +1,14 @@
 'use strict';
 
 (function () {
-  const { ROUTINES, ROUTINE_ORDER, PHASES, MEALS, NUTRITION_TIPS } = window.DATA;
+  const { ROUTINES, ROUTINE_ORDER, PHASES, MEALS, NUTRITION_TIPS, planId, person: PERSON, schedule: PLAN_SCHEDULE, kcal: PLAN_KCAL, pain: PAIN } = window.DATA;
   const FOODS = window.FOODS || [];
-  const KEY = 'plan-paola-v1';
+  // Los datos locales van por plan (Paola conserva su clave de siempre). La sesión de Supabase es una sola por teléfono:
+  // así, al entrar por primera vez, la app puede cambiar al plan de la persona sin pedir la contraseña de nuevo.
+  const KEY = planId === 'paola' ? 'plan-paola-v1' : `plan-${planId}-v1`;
+  document.title = `Plan ${PERSON}`;
+  const appleTitle = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+  if (appleTitle) appleTitle.setAttribute('content', `Plan ${PERSON}`);
   const DOW = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
   const DOW_LONG = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'];
   const MONTHS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
@@ -29,7 +34,7 @@
   function defaults() {
     return {
       v: 1,
-      settings: { startDate: mondayOf(today()), upperDay: 'mar', coachName: 'Franco', coachPin: '', kcal: { recomp: 1800, cut: 1500 }, hideInstall: false },
+      settings: { startDate: mondayOf(today()), upperDay: PLAN_SCHEDULE.flex ? PLAN_SCHEDULE.flex.defaultId : '', coachName: 'Franco', coachPin: '', kcal: Object.assign({}, PLAN_KCAL.defaults), hideInstall: false },
       swaps: {}, sessions: [], active: null, checkins: {}, food: {}, measures: [], sent: {},
       plan: {}, dirty: {}, deletes: [], syncedUser: null, myFoods: [], recentFoods: []
     };
@@ -139,6 +144,8 @@
     notLinked = !ath;
     if (!ath) return;
     const rs = ath.settings || {};
+    // Si la ficha dice que el plan es otro, se recuerda y se recarga con el plan correcto.
+    if (rs.plan && rs.plan !== planId && window.DATA.switchPlan(rs.plan)) return;
     ['startDate', 'upperDay', 'coachName'].forEach(k => { if (rs[k]) S.settings[k] = rs[k]; });
     if (rs.kcal) S.settings.kcal = Object.assign({}, S.settings.kcal, rs.kcal);
     if (rs.swaps) S.swaps = Object.assign({}, rs.swaps);
@@ -191,18 +198,10 @@
   }
 
   // ---------- Bloque, fase y metas ----------
-  function block(date = today()) {
-    const days = daysBetween(S.settings.startDate, date);
-    const week = Math.floor(days / 7) + 1;
-    let phase = 'maint', weekIn = week - 10, weeksTotal = null;
-    if (days < 0) { phase = 'pre'; weekIn = null; }
-    else if (week <= 4) { phase = 'recomp'; weekIn = week; weeksTotal = 4; }
-    else if (week <= 10) { phase = 'cut'; weekIn = week - 4; weeksTotal = 6; }
-    return { week, phase, weekIn, weeksTotal, info: PHASES[phase] };
-  }
+  const block = (date = today()) => CORE.blockFor(S.settings.startDate, date);
   function targets(date) {
     const b = block(date);
-    const kcal = Number(S.settings.kcal[b.info.kcalKey]) || 1800;
+    const kcal = Number(S.settings.kcal[b.info.kcalKey]) || PLAN_KCAL.defaults[b.info.kcalKey] || 1800;
     const { p, g } = b.info.macros;
     return { kcal, p, g, c: Math.max(0, Math.round((kcal - p * 4 - g * 9) / 4)), steps: b.info.steps || 8000, phase: b.phase };
   }
@@ -219,11 +218,7 @@
   }
   const isBodyweight = rx => !rx.inc;
 
-  function schedule() {
-    const map = { 0: 'LA', 3: 'LB', 4: 'UB' };
-    map[S.settings.upperDay === 'mie' ? 2 : 1] = 'UA';
-    return map;
-  }
+  const schedule = () => CORE.scheduleFor(S.settings.upperDay);
   const sortedSessions = () => S.sessions.slice().sort((a, b) => a.finishedAt - b.finishedAt);
   function weekSessions(monday) {
     const end = addDays(monday, 6);
@@ -306,7 +301,7 @@
     const b = block(monday);
     const st = weekStats(monday);
     const L = [];
-    L.push(`Resumen semanal de Paola · ${fmtShort(monday)} al ${fmtShort(addDays(monday, 6))}`);
+    L.push(`Resumen semanal de ${PERSON} · ${fmtShort(monday)} al ${fmtShort(addDays(monday, 6))}`);
     L.push(`${b.info.name}${b.weekIn ? ` · semana ${b.weekIn}${b.weeksTotal ? ' de ' + b.weeksTotal : ''}` : ''}`);
     L.push('');
     L.push('NÚMEROS');
@@ -432,7 +427,7 @@
       parts.push(`<div class="notice"><div><b>Instálala en el iPhone.</b> En Safari toca Compartir y luego «Agregar a inicio». <a class="linkbtn" href="#/instalar">Ver pasos</a></div><button class="x" data-a="hide-install" aria-label="Cerrar aviso">×</button></div>`);
     }
 
-    const totalWeeks = 10;
+    const totalWeeks = CORE.totalWeeks;
     const pct = b.phase === 'pre' ? 0 : Math.min(100, Math.round((Math.min(b.week, totalWeeks) / totalWeeks) * 100));
     const strip = DOW.map((d, i) => {
       const date = addDays(monday, i);
@@ -553,7 +548,7 @@
     parts.push(`<div class="setup"><label class="k" for="setup-${ex.id}">📌 Tu setup</label>
       <input class="inp" id="setup-${ex.id}" data-setup="${esc(rx.histKey)}" value="${esc(getSetup(rx.histKey))}" placeholder="Banco, máquina, agarre…" autocomplete="off">
       <span class="small muted">Se guarda para tu próxima sesión</span></div>`);
-    parts.push(`<p class="ex-note">${esc(rx.note)}</p>`);
+    if (rx.note) parts.push(`<p class="ex-note">${esc(rx.note)}</p>`);
     if (pres && pres.note) parts.push(`<p class="coach-note"><b>${esc(S.settings.coachName)}:</b> ${esc(pres.note)}</p>`);
 
     // Rendimiento anterior
@@ -913,7 +908,7 @@
         <div class="q"><label for="ci-peso">Peso en ayunas <span class="hint">después del baño</span></label>
           ${c.noPeso ? `<p class="muted">Hoy no te pesaste.</p>` : `<div class="inp-u"><input class="inp" id="ci-peso" inputmode="decimal" data-ci="peso" data-d="${date}" value="${esc(c.peso)}" placeholder="56,0"><span class="u">kg</span></div>`}
           <button type="button" class="linkbtn" data-a="ci-set" data-k="noPeso" data-v="${c.noPeso ? '' : '1'}" data-d="${date}">${c.noPeso ? 'Sí me pesé' : 'No me pesé hoy'}</button></div>
-        <div class="q"><span class="ql">Dolor de hombro <span class="hint">0 = nada, 10 = mucho</span></span>${scaleButtons('hombro', 0, 10, c.hombro, date)}</div>
+        ${PAIN ? `<div class="q"><span class="ql">Dolor de ${esc(PAIN.label)} <span class="hint">0 = nada, 10 = mucho</span></span>${scaleButtons('hombro', 0, 10, c.hombro, date)}</div>` : ''}
         <div class="q"><span class="ql">Energía</span>${segButtons('energy', ENERGY, c.energy, date)}</div>
         <div class="q"><label for="ci-nota">Nota del día</label><textarea id="ci-nota" data-ci="nota" data-d="${date}" placeholder="Algo fuera de lo común, cómo te sentiste…">${esc(c.nota)}</textarea></div>
       </section>
@@ -967,23 +962,7 @@
   }
 
   function viewPlan() {
-    const k = S.settings.kcal;
-    const html = `<section class="card prose"><h2>Las fases</h2><ul>
-        <li><b>Semanas 1–4, recomposición:</b> ${nf(k.recomp, 0)} kcal. Las semanas 1–2 son de adaptación, con todas las series a RIR 2.</li>
-        <li><b>Semanas 5–10, mini cut:</b> ${nf(k.cut, 0)} kcal. El objetivo es bajar 0,3–0,45 kg por semana sin perder fuerza.</li>
-        <li><b>Después:</b> 1–2 semanas en mantención y se define el siguiente bloque.</li></ul></section>
-      <section class="card prose"><h2>Cómo se entrena</h2><ul>
-        <li><b>RIR</b> son las repeticiones que quedan en reserva. RIR 1 = podrías hacer una más con buena técnica, pero no dos.</li>
-        <li><b>Desde la semana 3:</b> la primera serie a RIR 2 y las demás a RIR 1, salvo que ${esc(S.settings.coachName)} indique otra cosa en el ejercicio.</li>
-        <li><b>Descansos:</b> 3–5 min en sentadilla, rumano, prensa, press, remo y jalón. 2–3 min en el resto.</li>
-        <li><b>Progresión:</b> cuando todas las series llegan al tope del rango, se sube el peso lo mínimo y se vuelve al número bajo. La app te lo sugiere en cada ejercicio.</li>
-        <li><b>Calentamiento:</b> 5 min suaves y series de aproximación en el primer ejercicio de cada grupo.</li>
-        <li><b>Técnica:</b> bajar en 2–3 s, recorrido completo, sin rebotes. Una repetición con mala técnica no cuenta.</li>
-        <li><b>Hombro:</b> si algo molesta, se anota en el mensaje del ejercicio y se avisa. ${esc(S.settings.coachName)} puede cambiar el ejercicio por una variante.</li></ul></section>
-      <section class="card prose"><h2>Cómo se ajusta</h2><ul>
-        <li><b>Recomposición:</b> si el peso promedio baja más de 0,3 kg por semana dos semanas seguidas, +100 kcal. Si sube más de 0,3 kg, −100 kcal.</li>
-        <li><b>Mini cut:</b> si baja menos de 0,2 kg por semana durante 2 semanas, −100 kcal o +2.000 pasos. Si baja más de 0,6 kg o las cargas caen, +100 kcal.</li>
-        <li><b>Suplementos:</b> creatina monohidrato 3–5 g diarios. Calcio de 3 porciones de lácteos. Vitamina D según examen.</li></ul></section>`;
+    const html = window.DATA.guide(S.settings.kcal, esc(S.settings.coachName), nf);
     return { title: 'Plan y reglas', back: '#/mas', html };
   }
 
@@ -1029,14 +1008,14 @@
         <div class="q"><label for="lg-email">Correo</label><input class="inp" id="lg-email" type="email" autocomplete="username" inputmode="email" autocapitalize="off"></div>
         <div class="q"><label for="lg-pass">Contraseña</label><input class="inp" id="lg-pass" type="password" autocomplete="current-password"></div>
         <button class="btn block" type="submit" id="lg-btn">Entrar</button></form>`;
-    return { title: 'Plan Paola', bare: true, html };
+    return { title: `Plan ${PERSON}`, bare: true, html };
   }
 
   function viewNotLinked() {
     const html = `<section class="card"><h3>Esta cuenta no es de atleta</h3>
         <p class="muted">Entraste con ${esc(user && user.email)}, que no está conectada como atleta. Si eres ${esc(S.settings.coachName)}, usa la app de coach.</p>
         <button class="btn block ghost" data-a="logout">Cerrar sesión</button></section>`;
-    return { title: 'Plan Paola', bare: true, html };
+    return { title: `Plan ${PERSON}`, bare: true, html };
   }
 
   function viewCuenta() {
@@ -1076,15 +1055,12 @@
     }).join('');
     const html = `<section class="card form"><h3>Bloque</h3>
         <div class="q"><label for="c-start">Fecha de inicio (lunes de la semana 1)</label><input class="inp" type="date" id="c-start" value="${S.settings.startDate}"></div>
-        <div class="q"><span class="ql">Día del Upper A</span><div class="seg">
-          <button type="button" class="${S.settings.upperDay === 'mar' ? 'on' : ''}" data-a="upper-day" data-v="mar">Martes</button>
-          <button type="button" class="${S.settings.upperDay === 'mie' ? 'on' : ''}" data-a="upper-day" data-v="mie">Miércoles</button></div></div>
-        <div class="two"><div class="q"><label for="c-kr">Recomposición</label><div class="inp-u"><input class="inp" id="c-kr" inputmode="numeric" value="${k.recomp}" data-kcal="recomp"><span class="u">kcal</span></div></div>
-        <div class="q"><label for="c-kc">Mini cut</label><div class="inp-u"><input class="inp" id="c-kc" inputmode="numeric" value="${k.cut}" data-kcal="cut"><span class="u">kcal</span></div></div></div>
+        ${CORE.flexDayHtml(S.settings.upperDay)}
+        ${CORE.kcalFieldsHtml(k)}
         <p class="small muted">Proteína y grasa quedan fijas por fase; los carbohidratos se recalculan solos.</p>
         <div class="q"><label for="c-name">Nombre del coach</label><input class="inp" id="c-name" value="${esc(S.settings.coachName)}" data-coachname="1"></div>
       </section>
-      <section class="card flush"><div style="padding:14px 16px 4px" class="stack"><h3>Variantes para el hombro</h3><p class="small muted">Activa la variante según lo que diga la kinesióloga. Aplica desde el próximo entrenamiento.</p></div><div class="list">${swapRows}</div></section>
+      ${CORE.hasVariants() ? `<section class="card flush"><div style="padding:14px 16px 4px" class="stack"><h3>${esc(PAIN ? PAIN.variantsTitle : 'Variantes de ejercicios')}</h3><p class="small muted">Activa la variante según lo que diga la kinesióloga. Aplica desde el próximo entrenamiento.</p></div><div class="list">${swapRows}</div></section>` : ''}
       <button class="btn block ghost" data-a="coach-exit">Salir del modo coach</button>`;
     return { title: 'Modo coach', back: '#/mas', html };
   }
@@ -1107,7 +1083,7 @@
   function render() {
     const { name, arg, key } = current();
     let v;
-    if (!authReady) v = { title: 'Plan Paola', bare: true, html: '<p class="muted">Cargando…</p>' };
+    if (!authReady) v = { title: `Plan ${PERSON}`, bare: true, html: '<p class="muted">Cargando…</p>' };
     else if (sb && !user) v = viewLogin();
     else if (sb && notLinked) v = viewNotLinked();
     else switch (name) {
@@ -1132,7 +1108,7 @@
     const pending = !dayComplete(S.checkins[today()]);
     document.getElementById('tabs').hidden = !!v.bare;
     document.getElementById('tabs').innerHTML = v.bare ? '' : TABS.map(([id, label]) => `<a href="#/${id}" class="${tab === id ? 'on' : ''}" ${tab === id ? 'aria-current="page"' : ''}>${ICONS[id]}<span>${label}</span>${id === 'checkin' && pending ? '<span class="dot" aria-label="pendiente"></span>' : ''}</a>`).join('');
-    document.title = `${v.title} · Plan Paola`;
+    document.title = `${v.title} · Plan ${PERSON}`;
     if (key !== lastRoute) { window.scrollTo(0, 0); lastRoute = key; }
     renderTimer();
   }
@@ -1313,7 +1289,7 @@
       if (el.dataset.confirm !== '1') { el.dataset.confirm = '1'; el.textContent = 'Toca otra vez para eliminar'; return; }
       S.sessions = S.sessions.filter(s => s.id !== el.dataset.id); save(); markDeleted('session', el.dataset.id); location.hash = '#/historial'; toast('Entrenamiento eliminado');
     },
-    'share-session': el => { const s = S.sessions.find(x => x.id === el.dataset.id); if (s) shareText(sessionText(s), 'Entrenamiento de Paola'); },
+    'share-session': el => { const s = S.sessions.find(x => x.id === el.dataset.id); if (s) shareText(sessionText(s), `Entrenamiento de ${PERSON}`); },
     'nut-day': el => { const d = el.dataset.d; location.hash = '#/nutricion' + (d === today() ? '' : '/' + d); },
     food: el => {
       const { name, arg } = current();
@@ -1408,7 +1384,7 @@
     'ci-week': el => { const d = el.dataset.d; location.hash = d === mondayOf(today()) ? '#/checkin' : '#/checkin/w' + d; },
     'send-week': el => {
       const m = el.dataset.d;
-      shareText(weekSummaryText(m), 'Resumen semanal de Paola').then(() => { S.sent[m] = Date.now(); save(); render(); });
+      shareText(weekSummaryText(m), `Resumen semanal de ${PERSON}`).then(() => { S.sent[m] = Date.now(); save(); render(); });
     },
     'add-measure': () => {
       const date = document.getElementById('m-date').value || today();
@@ -1427,9 +1403,9 @@
       const name = `plan-paola-respaldo-${today()}.json`;
       try {
         const file = new File([json], name, { type: 'application/json' });
-        if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: 'Respaldo Plan Paola' }); return; }
+        if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: `Respaldo Plan ${PERSON}` }); return; }
       } catch (e) { if (e && e.name === 'AbortError') return; }
-      shareText(json, 'Respaldo Plan Paola');
+      shareText(json, `Respaldo Plan ${PERSON}`);
     },
     'coach-create': () => {
       const v = document.getElementById('coach-pin').value.trim();
@@ -1488,7 +1464,7 @@
     };
     openSheet(`<h2>Terminar entrenamiento</h2>
       <div class="q"><span class="ql">¿Qué tan difícil fue?</span>${scale('difficulty', 1, 5)}<div class="scale-ends"><span>Fácil</span><span>Durísimo</span></div></div>
-      <div class="q"><span class="ql">Molestia en el hombro</span>${scale('shoulder', 0, 10)}<div class="scale-ends"><span>Nada</span><span>Mucha</span></div></div>
+      ${PAIN ? `<div class="q"><span class="ql">Molestia en ${esc(PAIN.label === 'hombro' ? 'el hombro' : PAIN.label)}</span>${scale('shoulder', 0, 10)}<div class="scale-ends"><span>Nada</span><span>Mucha</span></div></div>` : ''}
       <button class="btn block lower" data-a="post-save">Guardar entrenamiento</button>
       <button class="btn block ghost" data-a="close">Seguir entrenando</button>`);
   }

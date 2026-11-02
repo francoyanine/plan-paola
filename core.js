@@ -1,6 +1,6 @@
 'use strict';
 
-// Lógica compartida entre la app de Paola y la app de coach: fechas, fases, RIR y progresión.
+// Lógica compartida entre la app de la persona y la app de coach: fechas, fases, RIR y progresión.
 (function () {
   const { ROUTINES, PHASES } = window.DATA;
   const DOW = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
@@ -22,15 +22,21 @@
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const avg = arr => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null);
 
-  // Semana del plan a partir del lunes de inicio: 1–4 recomposición, 5–10 mini cut, después mantención.
+  // Semana del plan a partir del lunes de inicio. Las fases con "weeks" (en el orden del plan) van una tras otra;
+  // después viene la mantención. Antes de la fecha de inicio la fase es "pre".
+  const PHASE_SEQ = Object.keys(PHASES).filter(k => PHASES[k].weeks);
+  const totalWeeks = PHASE_SEQ.reduce((n, k) => n + PHASES[k].weeks, 0);
   function blockFor(startDate, date) {
     const days = daysBetween(startDate, date);
     const week = Math.floor(days / 7) + 1;
-    let phase = 'maint', weekIn = week - 10, weeksTotal = null;
-    if (days < 0) { phase = 'pre'; weekIn = null; }
-    else if (week <= 4) { phase = 'recomp'; weekIn = week; weeksTotal = 4; }
-    else if (week <= 10) { phase = 'cut'; weekIn = week - 4; weeksTotal = 6; }
-    return { week, phase, weekIn, weeksTotal, info: PHASES[phase] };
+    if (days < 0) return { week, phase: 'pre', weekIn: null, weeksTotal: null, info: PHASES.pre };
+    let from = 0;
+    for (const k of PHASE_SEQ) {
+      const len = PHASES[k].weeks;
+      if (week <= from + len) return { week, phase: k, weekIn: week - from, weeksTotal: len, info: PHASES[k] };
+      from += len;
+    }
+    return { week, phase: 'maint', weekIn: week - from, weeksTotal: null, info: PHASES.maint };
   }
   const weekStart = (startDate, week) => addDays(startDate, (week - 1) * 7);
 
@@ -117,23 +123,17 @@
   }
   const hasKg = p => !!p && (presKgAt(p, 0) !== null || (p.kgs || []).some(v => v !== null && v !== '' && v !== undefined));
 
-  // Progresión serie por serie desde el último registro: tope del rango → sube; bajo el mínimo → baja; si no, se mantiene.
+  // Progresión lineal (el mismo peso en todas las series), desde el peso de la serie 1 del último registro:
+  // todas las series al tope del rango → sube; promedio de reps bajo el mínimo → baja; si no, se mantiene.
   function progressFrom(rx, last, inc, sets) {
     if (rx.type === 'time' || !rx.inc || !last || !last.sets.length) return null;
-    const n = sets || rx.sets;
-    const kgs = [], moves = [];
-    for (let i = 0; i < n; i++) {
-      const src = last.sets[Math.min(i, last.sets.length - 1)];
-      const kg = num(src.kg);
-      if (!kg) return null;
-      const reps = num(src.reps) || 0;
-      const step = reps >= rx.reps[1] ? 1 : (reps < rx.reps[0] ? -1 : 0);
-      moves.push(step);
-      kgs.push(Math.max(0, Math.round((kg + step * inc) * 100) / 100));
-    }
-    const up = moves.filter(m => m > 0).length, down = moves.filter(m => m < 0).length;
-    const action = up && !down ? 'up' : (down && !up ? 'down' : (up || down ? 'mix' : 'keep'));
-    return { kgs, moves, action };
+    const kg = num(last.sets[0].kg);
+    if (!kg) return null;
+    const reps = last.sets.map(x => num(x.reps) || 0);
+    const allTop = last.sets.length >= Math.min(sets || rx.sets, rx.sets) && reps.every(r => r >= rx.reps[1]);
+    const step = allTop ? 1 : (avg(reps) < rx.reps[0] ? -1 : 0);
+    const next = Math.max(0, Math.round((kg + step * inc) * 100) / 100);
+    return { kgs: Array(sets || rx.sets).fill(next), action: step > 0 ? 'up' : (step < 0 ? 'down' : 'keep') };
   }
 
   // Diferencia de una serie con la misma serie de la vez anterior: "+1 rep", "+2,5 kg −2 reps".
@@ -179,17 +179,40 @@
   }
   // Metas de la fase con las calorías que definió el coach.
   function targetsFor(settings, phase) {
-    const info = PHASES[phase] || PHASES.recomp;
-    const kcal = Number(((settings && settings.kcal) || {})[info.kcalKey]) || 1800;
+    const info = PHASES[phase] || PHASES.maint;
+    const kcal = Number(((settings && settings.kcal) || {})[info.kcalKey]) || window.DATA.kcal.defaults[info.kcalKey] || 1800;
     const { p, g } = info.macros;
     return { kcal, p, g, c: Math.max(0, Math.round((kcal - p * 4 - g * 9) / 4)), steps: info.steps || 8000 };
   }
 
-  function scheduleFor(upperDay) {
-    const map = { 0: 'LA', 3: 'LB', 4: 'UB' };
-    map[upperDay === 'mie' ? 2 : 1] = 'UA';
+  // Calendario de la semana (0 = lunes) → rutina. flexValue: opción elegida para la rutina movible del plan.
+  function scheduleFor(flexValue) {
+    const sch = window.DATA.schedule;
+    const map = Object.assign({}, sch.fixed);
+    const fx = sch.flex;
+    if (fx) {
+      const opt = fx.options.find(o => o.id === flexValue) || fx.options.find(o => o.id === fx.defaultId) || fx.options[0];
+      map[opt.day] = fx.routine;
+    }
     return map;
   }
+
+  // Controles de ajustes que dependen del plan (los usan la app de la persona y la de coach).
+  function flexDayHtml(current) {
+    const fx = window.DATA.schedule.flex;
+    if (!fx) return '';
+    const cur = fx.options.some(o => o.id === current) ? current : fx.defaultId;
+    return `<div class="q"><span class="ql">${esc(fx.label)}</span><div class="seg">${fx.options.map(o =>
+      `<button type="button" class="${cur === o.id ? 'on' : ''}" data-a="upper-day" data-v="${esc(o.id)}">${esc(o.label)}</button>`).join('')}</div></div>`;
+  }
+  function kcalFieldsHtml(kcal) {
+    const field = f => `<div class="q"><label for="c-kcal-${esc(f.key)}">${esc(f.label)}</label><div class="inp-u"><input class="inp" id="c-kcal-${esc(f.key)}" inputmode="numeric" value="${esc(kcal[f.key])}" data-kcal="${esc(f.key)}"><span class="u">kcal</span></div></div>`;
+    const fields = window.DATA.kcal.fields;
+    const rows = [];
+    for (let i = 0; i < fields.length; i += 2) rows.push(`<div class="two">${fields.slice(i, i + 2).map(field).join('')}</div>`);
+    return rows.join('');
+  }
+  const hasVariants = () => Object.values(ROUTINES).some(r => r.exercises.some(ex => ex.shoulder));
 
   // Deslizar hacia abajo desde el tope de la pantalla para actualizar. Las apps instaladas en iPhone no lo traen.
   function pullToRefresh(onRefresh) {
@@ -227,8 +250,8 @@
 
   window.CORE = {
     DOW, DOW_LONG, MONTHS, pad, ymd, parse, today, addDays, dowIdx, mondayOf, daysBetween, fmtDay, fmtShort, nf, num, esc, avg,
-    blockFor, weekStart, RIR_SCHEMES, parseRir, defaultScheme, rirForSet, rirList,
-    resolveEx, isBodyweight, findExercise, setText, setsText, lastPerfIn, autoSuggest, scheduleFor, pullToRefresh,
+    blockFor, totalWeeks, weekStart, RIR_SCHEMES, parseRir, defaultScheme, rirForSet, rirList,
+    resolveEx, isBodyweight, flexDayHtml, kcalFieldsHtml, hasVariants, findExercise, setText, setsText, lastPerfIn, autoSuggest, scheduleFor, pullToRefresh,
     presSets, presKgAt, hasKg, progressFrom, setDelta, mealsForDay, dayIntake, targetsFor, fmtM
   };
 })();

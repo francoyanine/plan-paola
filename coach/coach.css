@@ -107,3 +107,10 @@ table.grid.ci td.bad { background: #FDE7E5; color: var(--danger); }
 table.grid.ci td.avg { color: var(--upper); font-weight: 700; background: var(--surface-2); }
 table.grid.ci tr.sec td { text-align: left; background: var(--upper-soft); color: var(--upper); font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; }
 table.grid.ci th.stick { min-width: 170px; }
+
+/* Planilla con todas las rutinas */
+table.grid.plan tr.rsec th, table.grid.plan tr.rsec td { background: var(--upper-soft); color: var(--upper); font-family: var(--display); font-size: 1.05rem; font-weight: 700; padding: 8px 12px; border-bottom: 2px solid var(--upper); }
+table.grid.plan tr.rsec th .muted { font-family: var(--body); font-size: 0.8rem; font-weight: 400; }
+.ptools .seg-links { align-items: center; }
+td.pc .kgcell.one input { font-size: 1rem; height: 36px; }
+td.pc .uneven { font-size: 0.7rem; color: var(--warn); }
