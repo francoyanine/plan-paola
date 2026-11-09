@@ -1,6 +1,6 @@
 'use strict';
 // Red primero para los archivos de la app (así llegan las actualizaciones) y caché como respaldo sin internet.
-const CACHE = 'plan-paola-v18';
+const CACHE = 'plan-paola-v19';
 const SHELL = ['./', 'index.html', 'styles.css', 'config.js', 'foods.js', 'plans/paola.js', 'plans/anita.js', 'data.js', 'core.js', 'app.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 

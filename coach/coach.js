@@ -80,12 +80,12 @@
     });
   }
 
-  async function saveSettings(patch) {
+  async function saveSettings(patch, quiet) {
     const next = Object.assign({}, A.settings || {}, patch);
     const { error } = await sb.from('athletes').update({ settings: next, updated_at: new Date().toISOString() }).eq('id', A.id);
     if (error) { toast('No se pudo guardar: ' + error.message); return false; }
     A.settings = next;
-    toast(`Guardado. ${A.name} lo ve al abrir su app.`);
+    if (!quiet) toast(`Guardado. ${A.name} lo ve al abrir su app.`);
     return true;
   }
 
@@ -334,7 +334,29 @@
     return { title: 'Progresión', html: parts.join(''), wide: true };
   }
 
-  const incFor = (ex, rx) => { const v = settings().inc[ex.id]; return v !== undefined && v !== null && v !== '' ? Number(v) : rx.inc; };
+  const incFor = (ex, rx) => { const v = settings().inc[ex.id]; return v !== undefined && v !== null && v !== '' ? Math.abs(Number(v)) : rx.inc; };
+  const incChosen = (ex, rx) => { const v = settings().inc[ex.id]; return v !== undefined && v !== null && v !== '' ? Number(v) : rx.inc; };
+
+  // Aplica una progresión a la semana actual: peso de la semana anterior (lo que levantó, o si no lo indicado) + la progresión, en todas las series.
+  // Queda como carga puesta a mano, así «Calcular progresiones» no la pisa.
+  function applyDelta(exId, delta) {
+    const exInfo = C.findExercise(exId);
+    if (!exInfo) return;
+    const rx = C.resolveEx(exInfo.ex, !!settings().swaps[exId]);
+    const w = Math.max(1, currentWeek() || 1);
+    const prevSes = sessionsSorted().filter(x => x.week === w - 1 && x.ex[exId] && x.ex[exId].sets.length).pop();
+    let base = prevSes ? num(prevSes.ex[exId].sets[0].kg) : null;
+    if (!base && w > 1) base = C.presKgAt((editing[w - 1] || draftOf(w - 1)).exercises[exId], 0);
+    if (!base) { const last = lastBefore(rx, w); base = last ? num(last.sets[0].kg) : null; }
+    if (!base) { toast(`No hay peso de la semana ${w - 1} para ${rx.name}`); return; }
+    const next = Math.max(0, Math.round((base + delta) * 100) / 100);
+    editDraft(w, d => {
+      const p = d.exercises[exId] = d.exercises[exId] || {};
+      setKgs(p, Array(C.presSets(p, rx)).fill(next));
+      delete p.auto;
+    });
+    toast(`${rx.name} · semana ${w}: ${nf(base, 2)} → ${nf(next, 2)} kg`);
+  }
   const ACTION = { up: ['up', '↑ Subir'], keep: ['keep', '= Mantener'], down: ['down', '↓ Bajar'], mix: ['mix', '↕ Ajustar'] };
   const kgTxt = v => (v === null || v === undefined || v === '' ? '' : nf(v, 2));
 
@@ -418,7 +440,7 @@
     if (!st.startDate) return { title: 'Planilla', html: `<a class="notice" href="#/ajustes" style="text-decoration:none"><div><b>Falta la fecha de inicio de ${esc(A.name)}.</b> Defínela en Ajustes.</div></a>` };
     const ws = planillaWeeks();
     const cw = currentWeek();
-    const incs = [0, 1.25, 2.5, 5, 10];
+    const incs = [-2.5, -1.5, -1, 0, 1.25, 2.5, 5, 10];
     const jump = ROUTINE_ORDER.map(t => `<a href="#" data-a="jump" data-r="${t}">${ROUTINES[t].name}</a>`).join('');
     const head = `<tr><th class="stick exh">Ejercicio</th>${ws.map(w => weekHeaderCell(w, cw)).join('')}</tr>`;
     const body = ROUTINE_ORDER.map(rid => {
@@ -426,11 +448,12 @@
       const secRow = `<tr class="rsec" id="rsec-${rid}"><th class="stick">${r.name}<span class="muted"> · ${esc(r.day)}</span></th><td colspan="${ws.length}"></td></tr>`;
       return secRow + r.exercises.map(ex => {
         const rx = C.resolveEx(ex, !!st.swaps[ex.id]);
-        const inc = incFor(ex, rx);
+        const inc = incChosen(ex, rx);
         const left = `<th class="stick exn"><b>${esc(rx.name)}</b><span class="muted">${esc(rx.group)}${rx.alt ? ' · variante' : ''}</span>
           <a class="linkbtn" href="${esc(rx.video || 'https://www.youtube.com/results?search_query=' + encodeURIComponent(rx.name + ' técnica'))}" target="_blank" rel="noopener">Ver video</a>
           ${rx.type === 'time' || !rx.inc ? '<span class="muted small">Sin carga</span>' : `<span class="muted small">Progresión kg</span>
-          <div class="incs">${incs.map(v => `<button class="${inc === v ? 'on' : ''}" data-a="set-inc" data-ex="${ex.id}" data-v="${v}">${nf(v, 2)}</button>`).join('')}<input class="mini" data-inc="${ex.id}" value="${incs.includes(inc) ? '' : nf(inc, 2)}" placeholder="otro" aria-label="Otro incremento"></div>`}</th>`;
+          <div class="incs">${incs.map(v => `<button class="${inc === v ? 'on' : ''}" data-a="set-inc" data-ex="${ex.id}" data-v="${v}">${nf(v, 2)}</button>`).join('')}<input class="mini" data-inc="${ex.id}" value="${incs.includes(inc) ? '' : nf(inc, 2)}" placeholder="otro" aria-label="Otro incremento"></div>
+          <span class="muted small">Se aplica a la semana ${Math.max(1, cw || 1)} sobre el peso de la anterior</span>`}</th>`;
         return `<tr>${left}${ws.map(w => planCell(r, ex, w, cw)).join('')}</tr>`;
       }).join('');
     }).join('');
@@ -593,7 +616,16 @@
     }
     document.body.classList.toggle('wide', !!v.wide);
     document.getElementById('hdr').innerHTML = `${v.back ? `<a class="back" href="${v.back}">‹ Volver</a>` : ''}<span class="title">${esc(v.title)}</span>${user && A ? `<button class="reload" data-a="reload" aria-label="Actualizar datos">${loading ? 'Cargando…' : 'Actualizar'}</button>` : ''}`;
-    document.getElementById('view').innerHTML = v.html;
+    const viewEl = document.getElementById('view');
+    const sameRoute = key === lastRoute;
+    const keepX = sameRoute && viewEl.querySelector('.sheet-scroll') ? viewEl.querySelector('.sheet-scroll').scrollLeft : 0;
+    const keepY = sameRoute ? window.scrollY : 0;
+    viewEl.innerHTML = v.html;
+    if (sameRoute) {
+      const sc = viewEl.querySelector('.sheet-scroll');
+      if (sc) sc.scrollLeft = keepX;
+      window.scrollTo(0, keepY);
+    }
     const tabs = document.getElementById('tabs');
     tabs.hidden = !!v.bare;
     const tab = TAB_OF[name] || 'inicio';
@@ -652,8 +684,10 @@
       publishWeek(w);
     },
     'set-inc': el => {
-      const inc = Object.assign({}, settings().inc, { [el.dataset.ex]: Number(el.dataset.v) });
-      saveSettings({ inc }).then(ok => ok && render());
+      const v = Number(el.dataset.v);
+      applyDelta(el.dataset.ex, v);
+      const inc = Object.assign({}, settings().inc, { [el.dataset.ex]: v });
+      saveSettings({ inc }, true).then(() => render());
     },
     'apply-rir': el => {
       const w = Number(el.dataset.w);
@@ -773,8 +807,9 @@
       saveSettings({ coachName: t.value.trim() || 'Franco' });
     } else if (t.dataset.inc) {
       const v = num(t.value);
-      if (v === null || v < 0 || v > 50) { toast('Incremento fuera de rango'); return; }
-      saveSettings({ inc: Object.assign({}, settings().inc, { [t.dataset.inc]: v }) }).then(ok => ok && render());
+      if (v === null || v < -20 || v > 50) { toast('Progresión fuera de rango'); return; }
+      applyDelta(t.dataset.inc, v);
+      saveSettings({ inc: Object.assign({}, settings().inc, { [t.dataset.inc]: v }) }, true).then(() => render());
     } else if (t.dataset.cf === 'sets') {
       render();
     } else if (t.id === 'c-ath') {
