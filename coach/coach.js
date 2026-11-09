@@ -48,6 +48,10 @@
       const { data: aths, error } = await sb.from('athletes').select('id, name, settings').eq('coach_id', user.id).order('name');
       if (error) throw error;
       athletes = aths || [];
+      // ?atleta=anita en el link abre directo con esa atleta (por nombre o por plan) y la deja elegida.
+      const wanted = (new URLSearchParams(location.search).get('atleta') || '').trim().toLowerCase();
+      const fromLink = wanted && athletes.find(a => a.name.toLowerCase() === wanted || ((a.settings || {}).plan || '') === wanted || a.name.toLowerCase().startsWith(wanted));
+      if (fromLink) lsSet('plan-coach-athlete', fromLink.id);
       const saved = lsGet('plan-coach-athlete');
       A = athletes.find(a => a.id === saved) || athletes[0] || null;
       // Cada persona tiene su plan: si el cargado no es el de ella, se cambia y la app se recarga.
