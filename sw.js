@@ -1,6 +1,7 @@
 'use strict';
 // Red primero para los archivos de la app (así llegan las actualizaciones) y caché como respaldo sin internet.
-const CACHE = 'plan-paola-v19';
+// Subir este número junto con ?v= en index.html y coach/index.html en cada publicación.
+const CACHE = 'plan-paola-v20';
 const SHELL = ['./', 'index.html', 'styles.css', 'config.js', 'foods.js', 'plans/paola.js', 'plans/anita.js', 'data.js', 'core.js', 'app.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 
@@ -28,8 +29,10 @@ self.addEventListener('fetch', e => {
   }
   // Supabase (datos y login) siempre va directo a la red.
   if (url.origin !== location.origin) return;
-  e.respondWith(fetch(req).then(res => {
+  // no-cache: siempre se pregunta al servidor si hay versión nueva, así no se mezclan archivos viejos y nuevos.
+  const fresh = req.mode === 'navigate' ? fetch(req.url, { cache: 'no-cache', credentials: 'same-origin' }) : fetch(req, { cache: 'no-cache' });
+  e.respondWith(fresh.then(res => {
     if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(req, copy)); }
     return res;
-  }).catch(() => caches.match(req).then(hit => hit || caches.match(url.pathname.includes('/coach/') ? 'coach/index.html' : 'index.html'))));
+  }).catch(() => caches.match(req, { ignoreSearch: true }).then(hit => hit || caches.match(url.pathname.includes('/coach/') ? 'coach/index.html' : 'index.html'))));
 });
