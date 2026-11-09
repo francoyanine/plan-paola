@@ -114,3 +114,9 @@ table.grid.plan tr.rsec th .muted { font-family: var(--body); font-size: 0.8rem;
 .ptools .seg-links { align-items: center; }
 td.pc .kgcell.one input { font-size: 1rem; height: 36px; }
 td.pc .uneven { font-size: 0.7rem; color: var(--warn); }
+
+/* Serie base para progresar y aplanar */
+td.pc .basepick { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 0.72rem; }
+td.pc .basepick button { height: 26px; border-radius: 7px; border: 1px solid var(--line); background: var(--surface); font-size: 0.72rem; font-weight: 700; padding: 0 6px; }
+td.pc .basepick button.on { background: var(--upper); color: var(--on-accent); border-color: var(--upper); }
+td.pc .linkbtn.small { font-size: 0.75rem; padding: 0; text-align: left; }

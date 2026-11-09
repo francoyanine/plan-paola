@@ -339,23 +339,43 @@
 
   // Aplica una progresión a la semana actual: peso de la semana anterior (lo que levantó, o si no lo indicado) + la progresión, en todas las series.
   // Queda como carga puesta a mano, así «Calcular progresiones» no la pisa.
+  function prevWeekSets(exId, rx, w) {
+    const ses = sessionsSorted().filter(x => x.week === w - 1 && x.ex[exId] && x.ex[exId].sets.length).pop();
+    if (ses) return { src: 'hizo', kgs: ses.ex[exId].sets.map(x => num(x.kg)).filter(v => v) };
+    if (w > 1) {
+      const pp = (editing[w - 1] || draftOf(w - 1)).exercises[exId];
+      const kgs = Array.from({ length: C.presSets(pp, rx) }, (_, i) => C.presKgAt(pp, i)).filter(v => v);
+      if (kgs.length) return { src: 'indicado', kgs };
+    }
+    const last = lastBefore(rx, w);
+    return { src: 'último registro', kgs: last ? last.sets.map(x => num(x.kg)).filter(v => v) : [] };
+  }
+  // Peso nuevo de la semana w: la serie base elegida de la semana anterior + la progresión, igual en todas las series.
+  function flatKgs(exId, rx, w, p) {
+    const prev = prevWeekSets(exId, rx, w);
+    if (!prev.kgs.length) return null;
+    const base = prev.kgs[Math.min(p.baseSet || 0, prev.kgs.length - 1)];
+    const next = Math.max(0, Math.round((base + (Number(p.delta) || 0)) * 100) / 100);
+    return { base, next, kgs: Array(C.presSets(p, rx)).fill(next) };
+  }
+
+  // Progresión tocada en la columna izquierda: se aplica a la semana actual sobre la serie base elegida.
+  // Queda como carga puesta a mano, así «Calcular progresiones» no la pisa.
   function applyDelta(exId, delta) {
     const exInfo = C.findExercise(exId);
     if (!exInfo) return;
     const rx = C.resolveEx(exInfo.ex, !!settings().swaps[exId]);
     const w = Math.max(1, currentWeek() || 1);
-    const prevSes = sessionsSorted().filter(x => x.week === w - 1 && x.ex[exId] && x.ex[exId].sets.length).pop();
-    let base = prevSes ? num(prevSes.ex[exId].sets[0].kg) : null;
-    if (!base && w > 1) base = C.presKgAt((editing[w - 1] || draftOf(w - 1)).exercises[exId], 0);
-    if (!base) { const last = lastBefore(rx, w); base = last ? num(last.sets[0].kg) : null; }
-    if (!base) { toast(`No hay peso de la semana ${w - 1} para ${rx.name}`); return; }
-    const next = Math.max(0, Math.round((base + delta) * 100) / 100);
+    const p0 = Object.assign({}, (editing[w] || draftOf(w)).exercises[exId], { delta });
+    const f = flatKgs(exId, rx, w, p0);
+    if (!f) { toast(`No hay peso de la semana ${w - 1} para ${rx.name}`); return; }
     editDraft(w, d => {
       const p = d.exercises[exId] = d.exercises[exId] || {};
-      setKgs(p, Array(C.presSets(p, rx)).fill(next));
+      p.delta = delta;
+      setKgs(p, f.kgs);
       delete p.auto;
     });
-    toast(`${rx.name} · semana ${w}: ${nf(base, 2)} → ${nf(next, 2)} kg`);
+    toast(`${rx.name} · semana ${w}: S${(p0.baseSet || 0) + 1} ${nf(f.base, 2)} → ${nf(f.next, 2)} kg en todas las series`);
   }
   const ACTION = { up: ['up', '↑ Subir'], keep: ['keep', '= Mantener'], down: ['down', '↓ Bajar'], mix: ['mix', '↕ Ajustar'] };
   const kgTxt = v => (v === null || v === undefined || v === '' ? '' : nf(v, 2));
@@ -418,15 +438,22 @@
       const badge = auto || (C.hasKg(p) ? null : hint);
       const prevRef = i => C.presKgAt((editing[w - 1] || draftOf(w - 1)).exercises[ex.id], i);
       ed.push(`<div class="edtop">${badge ? `<span class="act ${badge[0]}">${badge[1]}</span>` : '<span></span>'}${!C.hasKg(p) && prog ? `<span class="muted">sugerido ${nf(prog.kgs[0], 2)} kg</span>` : ''}</div>`);
-      // Series lineales: un peso para todas las series. Si una semana ya enviada trae pesos distintos, se muestran y se igualan al editar.
-      const v = C.presKgAt(p, 0);
-      const ref = prevRef(0);
-      const diff = v !== null && ref !== null ? Math.round((v - ref) * 100) / 100 : 0;
+      // Base: qué serie de la semana anterior se usa para progresar. Los kg por serie se pueden cambiar a mano.
+      const prev = prevWeekSets(ex.id, rx, w);
+      const baseIdx = Math.min(p.baseSet || 0, Math.max(0, prev.kgs.length - 1));
       const perSet = Array.from({ length: sets }, (_, i) => C.presKgAt(p, i));
       const uneven = perSet.some(x => x !== perSet[0]);
-      ed.push(`<label class="kgcell one"><span class="muted">Kg · todas las series${diff ? ` <i class="${diff > 0 ? 'pos' : 'neg'}">${diff > 0 ? '↑' : '↓'}${nf(Math.abs(diff), 2)}</i>` : ''}</span>
-        <input inputmode="decimal" autocomplete="off" data-cw="${w}" data-cex="${ex.id}" data-cf="kg" value="${esc(kgTxt(v).replace('.', ','))}" placeholder="${prog ? nf(prog.kgs[0], 2) : 'kg'}" aria-label="Kilos, semana ${w}"></label>
-        ${uneven ? `<span class="uneven">Enviado por serie: ${perSet.map((x, i) => `S${i + 1} ${x === null ? '—' : nf(x, 2)}`).join(' · ')}</span>` : ''}`);
+      if (prev.kgs.length) {
+        ed.push(`<div class="basepick"><span class="muted">Base semana ${w - 1} (${prev.src}):</span>${prev.kgs.map((k, i) => `<button class="${i === baseIdx ? 'on' : ''}" data-a="pick-base" data-w="${w}" data-ex="${ex.id}" data-i="${i}">S${i + 1} ${nf(k, 2)}</button>`).join('')}
+          ${p.delta !== undefined && p.delta !== null ? `<span class="act ${p.delta > 0 ? 'up' : (p.delta < 0 ? 'down' : 'keep')}">${p.delta > 0 ? '+' : ''}${nf(p.delta, 2)} kg</span>` : ''}</div>`);
+      }
+      ed.push(`<div class="kgs">${perSet.map((v, i) => {
+        const ref = prev.kgs.length ? prev.kgs[Math.min(i, prev.kgs.length - 1)] : null;
+        const diff = v !== null && ref !== null ? Math.round((v - ref) * 100) / 100 : 0;
+        return `<label class="kgcell"><span class="muted">S${i + 1}${diff ? ` <i class="${diff > 0 ? 'pos' : 'neg'}">${diff > 0 ? '↑' : '↓'}${nf(Math.abs(diff), 2)}</i>` : ''}</span>
+          <input inputmode="decimal" autocomplete="off" data-cw="${w}" data-cex="${ex.id}" data-cf="kg${i}" value="${esc(kgTxt(v).replace('.', ','))}" placeholder="${prog ? nf(prog.kgs[i] !== undefined ? prog.kgs[i] : prog.kgs[0], 2) : 'kg'}" aria-label="Kilos serie ${i + 1}, semana ${w}"></label>`;
+      }).join('')}</div>`);
+      if (uneven || (prev.kgs.length && C.hasKg(p))) ed.push(`<button class="linkbtn small" data-a="flatten" data-w="${w}" data-ex="${ex.id}">Aplanar: todas las series a S${baseIdx + 1} ${p.delta ? (p.delta > 0 ? '+' : '') + nf(p.delta, 2) + ' kg' : ''}</button>`);
     }
     ed.push(`<div class="sr"><label><span class="muted">Series</span><input inputmode="numeric" data-cw="${w}" data-cex="${ex.id}" data-cf="sets" value="${esc(p.sets || '')}" placeholder="${rx.sets}" aria-label="Series"></label>
       ${rx.type === 'time' ? '' : `<label><span class="muted">RIR</span><input data-cw="${w}" data-cex="${ex.id}" data-cf="rir" value="${esc(p.rir || '')}" placeholder="${C.defaultScheme(w)}" maxlength="5" aria-label="RIR"></label>`}</div>`);
@@ -714,7 +741,10 @@
         const p = (editing[w] || draftOf(w)).exercises[ex.id] || {};
         if (C.hasKg(p) && !p.auto) { manual.push(label); return; }
         const n = C.presSets(p, rx);
-        let prog = C.progressFrom(rx, lastBefore(rx, w), incFor(ex, rx), n);
+        const lastRaw = lastBefore(rx, w);
+        const b = p.baseSet || 0;
+        const last = lastRaw && lastRaw.sets[b] ? Object.assign({}, lastRaw, { sets: [lastRaw.sets[b]].concat(lastRaw.sets.filter((_, i) => i !== b)) }) : lastRaw;
+        let prog = C.progressFrom(rx, last, incFor(ex, rx), n);
         if (!prog) {
           const pp = (editing[w - 1] || draftOf(w - 1)).exercises[ex.id];
           if (C.hasKg(pp)) prog = { kgs: Array.from({ length: n }, (_, i) => C.presKgAt(pp, i)), action: 'keep' };
@@ -730,6 +760,27 @@
         <button class="btn block ghost" data-a="close-sheet">Cerrar</button>`);
     },
     'close-sheet': () => closeSheet(),
+    'pick-base': el => {
+      const w = Number(el.dataset.w), id = el.dataset.ex, i = Number(el.dataset.i);
+      const rx = C.resolveEx(C.findExercise(id).ex, !!settings().swaps[id]);
+      editDraft(w, d => {
+        const p = d.exercises[id] = d.exercises[id] || {};
+        p.baseSet = i;
+        if (p.delta !== undefined || C.hasKg(p)) { const f = flatKgs(id, rx, w, p); if (f) { setKgs(p, f.kgs); delete p.auto; } }
+      });
+      render();
+    },
+    flatten: el => {
+      const w = Number(el.dataset.w), id = el.dataset.ex;
+      const rx = C.resolveEx(C.findExercise(id).ex, !!settings().swaps[id]);
+      editDraft(w, d => {
+        const p = d.exercises[id] = d.exercises[id] || {};
+        const f = flatKgs(id, rx, w, p);
+        setKgs(p, f ? f.kgs : Array(C.presSets(p, rx)).fill(C.presKgAt(p, 0)));
+        delete p.auto;
+      });
+      render();
+    },
     jump: el => { const row = document.getElementById('rsec-' + el.dataset.r); if (row) row.scrollIntoView({ behavior: 'smooth', block: 'start' }); },
     'upper-day': el => { saveSettings({ upperDay: el.dataset.v }).then(ok => ok && render()); },
     swap: el => {
@@ -758,6 +809,12 @@
         const p = d.exercises[id] = d.exercises[id] || {};
         if (f === 'kg') {
           setKgs(p, Array(C.presSets(p, rx)).fill(v === '' ? null : num(v)));
+          delete p.auto;
+        } else if (/^kg\d+$/.test(f)) {
+          const n = C.presSets(p, rx);
+          const arr = Array.from({ length: n }, (_, i) => C.presKgAt(p, i));
+          arr[Number(f.slice(2))] = v === '' ? null : num(v);
+          setKgs(p, arr);
           delete p.auto;
         } else if (f === 'sets') {
           const n = parseInt(v, 10);
