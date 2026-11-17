@@ -36,7 +36,7 @@
       v: 1,
       settings: { startDate: mondayOf(today()), upperDay: PLAN_SCHEDULE.flex ? PLAN_SCHEDULE.flex.defaultId : '', coachName: 'Franco', coachPin: '', kcal: Object.assign({}, PLAN_KCAL.defaults), hideInstall: false },
       swaps: {}, sessions: [], active: null, checkins: {}, food: {}, measures: [], sent: {},
-      plan: {}, dirty: {}, deletes: [], syncedUser: null, myFoods: [], recentFoods: []
+      plan: {}, dirty: {}, deletes: [], syncedUser: null, myFoods: [], recentFoods: [], usual: {}
     };
   }
   function hydrate(s) {
@@ -77,6 +77,7 @@
   S.plan = S.plan || {};
   S.myFoods = S.myFoods || [];
   S.recentFoods = S.recentFoods || [];
+  S.usual = S.usual || {};
 
   function recordData(kind, key) {
     if (kind === 'session') return S.sessions.find(x => x.id === key) || null;
@@ -225,7 +226,7 @@
     return sortedSessions().filter(s => s.date >= monday && s.date <= end);
   }
   function nextRoutine(monday) {
-    const done = new Set(weekSessions(monday).map(s => s.routine));
+    const done = new Set(weekSessions(monday).map(s => s.routine).concat(Object.keys(weekSkips(monday))));
     return ROUTINE_ORDER.find(r => !done.has(r)) || null;
   }
   function lastPerf(histKey, before) {
@@ -272,7 +273,9 @@
   }
 
   // ---------- Check-in ----------
-  const dayComplete = c => !!c && CORE.checkinMissing(c).length === 0;
+  const trainedOn = d => S.sessions.some(s => s.date === d);
+  const missingOn = d => CORE.checkinMissing(S.checkins[d], d, trainedOn(d));
+  const dayDone = d => !!S.checkins[d] && missingOn(d).length === 0;
   const avg = arr => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null);
   function weekStats(monday) {
     const days = Array.from({ length: 7 }, (_, i) => addDays(monday, i));
@@ -283,7 +286,7 @@
     const prevPeso = avg(prevCs.map(c => (c.noPeso ? null : num(c.peso))).filter(v => v !== null));
     const sleepMin = pick(c => (c.sleepH === '' || c.sleepH === undefined ? null : (num(c.sleepH) || 0) * 60 + (num(c.sleepM) || 0)));
     return {
-      days, registered: days.filter(d => dayComplete(S.checkins[d])).length,
+      days, registered: days.filter(dayDone).length,
       peso, pesoDelta: peso !== null && prevPeso !== null ? peso - prevPeso : null,
       pasos: avg(pick(c => num(c.pasos))),
       sleep: avg(sleepMin), sleepQ: avg(pick(c => num(c.sleepQ))),
@@ -323,8 +326,16 @@
       if (c.adh) parts.push(`dieta ${c.adh}/10`);
       if (c.hombro !== undefined && c.hombro !== '') parts.push(`hombro ${c.hombro}/10`);
       if (c.energy) parts.push(`energía ${ENERGY[c.energy].toLowerCase()}`);
+      if (c.estres) parts.push(`estrés ${CORE.ESTRES[c.estres].toLowerCase()}`);
+      if (c.entreno) parts.push(c.entreno === 'descanso' ? 'descanso' : (c.entreno === 'otro' ? `entrenó: ${c.entrenoTxt || 'otro'}` : `entrenó ${ROUTINES[c.entreno] ? ROUTINES[c.entreno].name : c.entreno}`));
+      if (c.cardio === 'si') parts.push(`cardio${c.cardioTxt ? ' (' + c.cardioTxt + ')' : ''}`);
+      if (c.extraAct === 'si') parts.push(`actividad extra${c.extraActTxt ? ' (' + c.extraActTxt + ')' : ''}`);
       L.push(`${DOW[dowIdx(d)]} ${parse(d).getDate()}: ${parts.join(' · ')}`);
+      if (c.fuera === 'si') L.push(`   Fuera de lo común: ${c.fueraTxt || 'sí'}`);
+      (c.skips || []).forEach(x => L.push(`   Saltó ${ROUTINES[x.rid] ? ROUTINES[x.rid].name : x.rid}${x.reason ? ': ' + x.reason : ''}`));
       if (c.nota) L.push(`   Nota: ${c.nota}`);
+      const fd = S.food[d];
+      if (fd && fd.note) L.push(`   Nota de comidas: ${fd.note}`);
     });
     if (st.sessions.length) {
       L.push('');
@@ -412,13 +423,58 @@
     return `<span class="phase-pill ${b.phase === 'cut' ? 'cut' : ''}">${esc(label)}</span>`;
   }
 
+  // Día programado de cada rutina en la semana (0 = lunes) y entrenamientos saltados (se guardan en el check-in del día).
+  function routineDays() {
+    const out = {};
+    Object.entries(schedule()).forEach(([i, r]) => { if (out[r] === undefined) out[r] = Number(i); });
+    return out;
+  }
+  function weekSkips(monday) {
+    const out = {};
+    for (let i = 0; i < 7; i++) {
+      const d = addDays(monday, i);
+      ((S.checkins[d] && S.checkins[d].skips) || []).forEach(x => { out[x.rid] = Object.assign({ on: d }, x); });
+    }
+    return out;
+  }
+  // Estado de cada rutina en la semana: hecha, saltada, atrasada (ya pasó su día) o pendiente.
+  function routineStatus(monday) {
+    const t = today();
+    const days = routineDays();
+    const done = {};
+    weekSessions(monday).forEach(s => { done[s.routine] = s; });
+    const skips = weekSkips(monday);
+    const st = {};
+    ROUTINE_ORDER.forEach(rid => {
+      const date = days[rid] === undefined ? null : addDays(monday, days[rid]);
+      if (done[rid]) st[rid] = { state: 'done', s: done[rid], date };
+      else if (skips[rid]) st[rid] = { state: 'skip', skip: skips[rid], date };
+      else if (date && date < t && date >= S.settings.startDate && !ROUTINES[rid].optional) st[rid] = { state: 'late', late: daysBetween(date, t), date };
+      else st[rid] = { state: 'pending', date };
+    });
+    return st;
+  }
+  const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
+  const fmtDur = min => (min >= 60 ? `${Math.floor(min / 60)} h ${pad(min % 60)} min` : `${min} min`);
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+  // Series hechas y series indicadas de una sesión terminada.
+  function seriesCount(s) {
+    const r = ROUTINES[s.routine];
+    let total = 0, done = 0;
+    r.exercises.forEach(ex => {
+      const e = s.ex[ex.id];
+      total += CORE.presSets(presFor(s.week, ex.id), resolveEx(ex, e && e.alt));
+      done += e ? e.sets.length : 0;
+    });
+    return { done, total };
+  }
+
   function viewEntrenar() {
     const t = today();
     const monday = mondayOf(t);
     const b = block(t);
     const map = schedule();
-    const done = {};
-    weekSessions(monday).forEach(s => { done[s.routine] = s; });
+    const status = routineStatus(monday);
     const parts = [];
 
     if (!isStandalone() && !S.settings.hideInstall) {
@@ -431,10 +487,14 @@
       const date = addDays(monday, i);
       const r = map[i];
       const rr = r && ROUTINES[r];
-      const cls = ['wd', rr ? rr.kind : '', rr && rr.optional ? 'opt' : '', date === t ? 'today' : '', r && done[r] ? 'done' : ''].join(' ');
-      const inner = `<span class="d">${d}</span><span class="s">${rr ? rr.name.replace(' ', '<br>') : '·'}</span><span class="m">${r && done[r] ? '✓' : ''}</span>`;
+      const st = r && status[r];
+      const cls = ['wd', rr ? rr.kind : '', rr && rr.optional ? 'opt' : '', date === t ? 'today' : '', st && st.state === 'done' ? 'done' : '', st && st.state === 'late' ? 'late' : ''].join(' ');
+      const mark = st ? ({ done: '✓', late: '!', skip: '–' }[st.state] || '') : '';
+      const inner = `<span class="d">${d}</span><span class="s">${rr ? rr.name.replace(' ', '<br>') : '·'}</span><span class="m">${mark}</span>`;
       return rr ? `<a class="${cls}" href="#/workout/${r}">${inner}</a>` : `<div class="${cls}">${inner}</div>`;
     }).join('');
+    const required = ROUTINE_ORDER.filter(r => !ROUTINES[r].optional);
+    const doneCount = required.filter(r => status[r].state === 'done').length;
     const weekLine = b.phase === 'pre'
       ? `Parte el ${fmtDay(S.settings.startDate)}`
       : `${b.weekIn ? `Semana ${b.weekIn}${b.weeksTotal ? ' de ' + b.weeksTotal : ''}` : ''} · semana ${b.week} del plan`;
@@ -443,18 +503,24 @@
       <h2>${esc(b.info.name)}</h2>
       <div class="progress" aria-label="Avance del plan"><span style="width:${pct}%"></span></div>
       <div class="weekstrip">${strip}</div>
+      ${b.phase === 'pre' ? '' : `<div class="card-head small"><span class="muted">Esta semana</span><b class="num">${doneCount} / ${required.length} entrenamientos</b></div>`}
     </section>`);
 
     const wkPlan = S.plan[b.week];
     if (wkPlan && wkPlan.note) parts.push(`<div class="notice ok"><div><b>${esc(S.settings.coachName)} · semana ${b.week}:</b> ${esc(wkPlan.note)}</div></div>`);
 
-    if (!dayComplete(S.checkins[t])) {
-      parts.push(`<a class="notice" href="#/checkin/${t}" style="text-decoration:none"><div><b>Check-in de hoy pendiente.</b> Te falta: ${esc(CORE.checkinMissing(S.checkins[t]).join(', '))}. Va todos los días, entrenes o no.</div></a>`);
-    }
-    const pastMissing = Array.from({ length: dowIdx(t) }, (_, i) => addDays(monday, i)).filter(d => d >= S.settings.startDate && !dayComplete(S.checkins[d]));
-    if (pastMissing.length) {
-      parts.push(`<a class="notice" href="#/checkin/${pastMissing[0]}" style="text-decoration:none"><div><b>Días incompletos esta semana:</b> ${pastMissing.map(d => DOW_LONG[dowIdx(d)]).join(', ')}. Tócalo para completarlos.</div></a>`);
-    }
+    // Registro diario: los 7 días de la semana y el acceso al primero que falta.
+    const ciDays = Array.from({ length: 7 }, (_, i) => addDays(monday, i));
+    const missing = ciDays.filter(d => d <= t && d >= S.settings.startDate && !dayDone(d));
+    const dots = ciDays.map((d, i) => {
+      const cls = dayDone(d) ? 'done' : (d > t || d < S.settings.startDate ? 'future' : 'pending');
+      return `<span class="cidot ${cls} ${d === t ? 'today' : ''}"><i>${dayDone(d) ? '✓' : (cls === 'pending' ? '–' : '')}</i><span>${DOW[i].charAt(0)}</span></span>`;
+    }).join('');
+    parts.push(`<a class="card ci-card" href="#/checkin/${missing[0] || t}">
+      <div class="card-head"><span class="eyebrow">Check-in</span><span class="chev" aria-hidden="true">›</span></div>
+      <h3>Registro diario 📝</h3>
+      <span class="small ${missing.length ? 'warn-t' : 'ok-t'}">${missing.length ? `${plural(missing.length, 'día', 'días')} sin completar ⚠️` : 'Todo al día ✓'}</span>
+      <div class="ci-row"><div class="cidots">${dots}</div>${missing.length ? '<span class="btn small soft">Llenar →</span>' : ''}</div></a>`);
 
     if (S.active) {
       const r = ROUTINES[S.active.routine];
@@ -465,23 +531,70 @@
       const nr = nextRoutine(monday);
       if (nr) {
         const r = ROUTINES[nr];
-        parts.push(`<section class="card next ${r.kind}"><span class="eyebrow">Próximo${r.optional ? ' · optativo' : ''}</span><span class="rname">${r.name}</span>
-          <p class="muted small">${esc(r.day)} · ≈${r.minutes} min · ${r.exercises.length} ejercicios</p>
-          <a class="btn block ${r.kind}" href="#/workout/${r.id}">Ver y comenzar</a></section>`);
+        const st = status[nr];
+        const late = st.state === 'late';
+        parts.push(`<section class="card next ${r.kind}"><div class="card-head"><span class="eyebrow ${late ? 'warn-t' : ''}">${late ? 'Atrasado' : 'Próximo'}${r.optional ? ' · optativo' : ''}</span>${st.date ? `<span class="small muted">${esc(cap(fmtDay(st.date)))}</span>` : ''}</div>
+          <span class="rname">${r.name}</span>
+          <p class="muted small">${late ? `Tocaba hace ${plural(st.late, 'día', 'días')}. Hazlo apenas puedas.` : esc(r.day)} · ≈${r.minutes} min · ${r.exercises.length} ejercicios</p>
+          <a class="btn block ${r.kind}" href="#/workout/${r.id}">Comenzar entrenamiento →</a></section>`);
       } else {
-        parts.push(`<div class="notice ok"><div><b>Semana completa.</b> Hiciste las cuatro sesiones. Descanso y a caminar.</div></div>`);
+        parts.push(`<div class="notice ok"><div><b>Semana completa.</b> Hiciste todas las sesiones. Descanso y a caminar.</div></div>`);
       }
     }
 
     const rows = ROUTINE_ORDER.map(rid => {
       const r = ROUTINES[rid];
-      const s = done[rid];
-      const status = s ? `<span class="tag ok">Hecho</span>` : `<span class="tag ${r.optional ? 'line' : 'warn'}">${r.optional ? 'Optativo' : 'Pendiente'}</span>`;
-      const sub = s ? `${fmtDay(s.date)} · ${s.minutes} min · ${Object.values(s.ex).reduce((a, e) => a + e.sets.length, 0)} series` : esc(r.day);
-      return `<a class="li" href="${s ? '#/session/' + s.id : '#/workout/' + rid}"><span class="tag ${r.kind}">${r.name}</span><span class="grow"><span class="s">${sub}</span></span>${status}</a>`;
+      const st = status[rid];
+      let sub, href = '#/workout/' + rid, lead = `<span class="daytag ${r.kind}">${st.date ? DOW[dowIdx(st.date)] : '—'}</span>`, cls = '';
+      if (st.state === 'done') {
+        const s = st.s, n = seriesCount(s);
+        sub = `${DOW[dowIdx(s.date)]} ${fmtShort(s.date)} · ${fmtDur(s.minutes)} · ${n.done}/${n.total} series`;
+        href = '#/session/' + s.id; cls = 'done'; lead = '<span class="daytag ok">✓</span>';
+      } else if (st.state === 'skip') {
+        sub = `Saltado${st.skip.reason ? ' · ' + esc(st.skip.reason) : ''}`; cls = 'skip'; lead = '<span class="daytag">–</span>';
+      } else if (st.state === 'late') {
+        sub = `<span class="warn-t">⚠️ Atrasado · ${plural(st.late, 'día', 'días')}</span>`;
+      } else {
+        sub = `<span class="up-t">${st.date ? DOW_LONG[dowIdx(st.date)] : esc(r.day)} · ${r.optional ? 'optativo' : 'pendiente'}</span>`;
+      }
+      return `<a class="li wk-row ${cls}" href="${href}">${lead}<span class="grow"><span class="t">${r.name}</span><span class="s">${sub}</span></span><span class="chev">›</span></a>`;
     }).join('');
-    parts.push(`<section class="card flush"><div style="padding:14px 16px 4px" class="card-head"><h3>Esta semana</h3><a class="linkbtn" href="#/historial">Historial</a></div><div class="list">${rows}</div></section>`);
+    parts.push(`<section class="card flush"><div class="sec-h"><h3>Esta semana ⏳</h3></div><div class="list">${rows}</div></section>`);
+
+    if (b.phase !== 'pre') {
+      const weeks = [];
+      for (let w = Math.max(1, b.week); w >= 1 && weeks.length < 4; w--) weeks.push(w);
+      const weekRows = weeks.map(w => {
+        const m = CORE.weekStart(S.settings.startDate, w);
+        const n = new Set(weekSessions(m).filter(s => !ROUTINES[s.routine].optional).map(s => s.routine)).size;
+        return `<a class="li" href="#/historial"><span class="daytag">S${w}</span><span class="grow"><span class="t">Semana ${w}</span><span class="s">${n}/${required.length} completados · ${fmtShort(m)}</span></span><span class="chev">›</span></a>`;
+      }).join('');
+      parts.push(`<section class="card flush"><div class="sec-h"><h3>Historial 📊</h3><a class="linkbtn" href="#/historial">Ver sesiones</a></div><div class="list">
+        <a class="li" href="#/bloque"><span class="daytag">BLQ</span><span class="grow"><span class="t">Ver bloque completo</span><span class="s">Todas las semanas, ejercicio por ejercicio</span></span><span class="chev">›</span></a>${weekRows}</div></section>`);
+    }
     return { title: 'Entrenamiento', html: parts.join(''), pill: phasePill(t) };
+  }
+
+  // Todo el bloque: lo que se hizo en cada semana del plan, ejercicio por ejercicio.
+  function viewBloque() {
+    const lastW = Math.max(1, block().week);
+    const parts = [`<p class="small muted">Cada fila es una semana del plan, con los kilos y repeticiones de cada serie. Sirve para ver cómo vas progresando.</p>`];
+    ROUTINE_ORDER.forEach(rid => {
+      const r = ROUTINES[rid];
+      const labels = exNumbering(r);
+      const rows = r.exercises.map(ex => {
+        const weeks = [];
+        for (let w = 1; w <= lastW; w++) {
+          const s = sortedSessions().filter(x => x.routine === rid && x.week === w).pop();
+          const e = s && s.ex[ex.id];
+          if (e && e.sets.length) weeks.push(`<tr><th>Sem ${w}</th><td>${esc(setsText(resolveEx(ex, e.alt), e.sets))}${e.alt ? ' <span class="tag warn">variante</span>' : ''}</td></tr>`);
+        }
+        return `<div class="blq-ex"><div class="blq-n"><span class="ex-n">${labels[ex.id]}</span><b>${esc(ex.name)}</b></div>
+          ${weeks.length ? `<table class="blq-t"><tbody>${weeks.join('')}</tbody></table>` : '<p class="small muted">Sin registros todavía.</p>'}</div>`;
+      }).join('');
+      parts.push(`<section class="card"><div class="card-head"><span class="tag ${r.kind}">${r.name}</span><span class="small muted">${esc(r.day)}</span></div>${rows}</section>`);
+    });
+    return { title: 'Bloque completo', back: '#/entrenar', html: parts.join('') };
   }
 
   function exNumbering(r) {
@@ -631,7 +744,14 @@
       parts.push(`<div class="notice"><div><b>Tienes ${ar.name} en curso.</b> Termínalo o descártalo antes de empezar otro. <a class="linkbtn" href="#/workout/${ar.id}">Ir a ${ar.name}</a></div></div>`);
     }
     if (!active && !S.active) {
+      const st = routineStatus(mondayOf(today()))[rid];
+      if (st.state === 'skip') {
+        parts.push(`<div class="notice"><div><b>Lo marcaste como saltado esta semana${st.skip.reason ? ': ' + esc(st.skip.reason) : ''}.</b> <button class="linkbtn" data-a="unskip" data-r="${rid}">Deshacer</button></div></div>`);
+      }
       parts.push(`<button class="btn block ${r.kind}" data-a="start" data-r="${rid}">Comenzar entrenamiento</button>`);
+      parts.push(`<a class="btn block ghost" href="#/bloque">Ver bloque completo →</a>`);
+      if (st.state !== 'done' && st.state !== 'skip') parts.push(`<button class="linkbtn center" data-a="skip" data-r="${rid}">Saltar entrenamiento</button>`);
+      parts.push(`<p class="small muted center">Solo lectura · Comienza el entrenamiento para registrar las series.</p>`);
     }
     parts.push(`<p class="small muted">Calentamiento: 5 min de caminata o bici suave antes del primer ejercicio.</p>`);
     r.exercises.forEach(ex => parts.push(exerciseCard(r, ex, labels[ex.id], { active, week })));
@@ -738,117 +858,159 @@
   }
   const mealsFor = (date, day) => CORE.mealsForDay(block(date).phase === 'cut', day);
 
+  const waterGoal = () => Number(window.DATA.water) || 2000;
+  const sumFoods = list => {
+    const t = { kcal: 0, p: 0, g: 0, c: 0 };
+    list.forEach(f => { t.kcal += f.kcal || 0; t.p += f.p || 0; t.g += f.g || 0; t.c += f.c || 0; });
+    return t;
+  };
+  const dayHasCustom = day => !!day && (Object.keys(day.swaps || {}).length || (day.extra || []).length || Object.keys(day.qty || {}).length);
+
   function viewNutricion(dateArg) {
     const date = dateArg || today();
     const tg = targets(date);
     const day = S.food[date] || { on: [], water: 0 };
     const meals = mealsFor(date, day);
+    const baseMeals = mealsFor(date, null);
     const eaten = f => f.extra || day.on.includes(f.id);
-    let kcal = 0, prot = 0, fat = 0, carb = 0;
-    meals.forEach(m => m.foods.forEach(f => { if (eaten(f)) { kcal += f.kcal; prot += f.p; fat += f.g || 0; carb += f.c || 0; } }));
-    [prot, fat, carb] = [prot, fat, carb].map(Math.round);
+    const tot = sumFoods(meals.flatMap(m => m.foods).filter(eaten));
+    const kcal = tot.kcal;
+    const [prot, fat, carb] = [tot.p, tot.g, tot.c].map(Math.round);
     const bar = (label, v, goal) => `<div class="bar"><div class="top"><span>${label}</span><b>${v} / ${goal} g</b></div><div class="track"><span style="width:${Math.min(100, v / goal * 100)}%"></span></div></div>`;
-    const planKcal = meals.reduce((a, m) => a + m.foods.filter(f => !f.extra).reduce((b, f) => b + f.kcal, 0), 0);
     const C = 2 * Math.PI * 48;
     const frac = Math.min(1, kcal / tg.kcal);
+    const left = tg.kcal - kcal;
     const label = date === today() ? 'Hoy' : (date === addDays(today(), -1) ? 'Ayer' : fmtDay(date));
     const parts = [];
-    parts.push(`<div class="daynav"><button data-a="nut-day" data-d="${addDays(date, -1)}" aria-label="Día anterior">‹</button><span class="dl">${esc(label.charAt(0).toUpperCase() + label.slice(1))}</span><button data-a="nut-day" data-d="${addDays(date, 1)}" aria-label="Día siguiente">›</button></div>`);
-    parts.push(`<section class="card">
+    parts.push(`<div class="macrobar" id="macrobar" hidden><div class="mb-k"><span class="eyebrow">Día</span><span><b>${nf(kcal, 0)}</b> / ${nf(tg.kcal, 0)} kcal</span></div>
+      <div class="mb-m"><span><i>P</i><b>${prot}</b>/${tg.p}</span><span><i>C</i><b>${carb}</b>/${tg.c}</span><span><i>G</i><b>${fat}</b>/${tg.g}</span></div></div>`);
+    parts.push(`<div class="daynav"><button data-a="nut-day" data-d="${addDays(date, -1)}" aria-label="Día anterior">‹</button><span class="dl">${esc(cap(label))}</span><button data-a="nut-day" data-d="${addDays(date, 1)}" aria-label="Día siguiente">›</button></div>`);
+    parts.push(`<details class="card tipsbox"><summary><span class="eyebrow">📋 Indicaciones del plan</span><span class="chev" aria-hidden="true">▾</span></summary><ul class="tips">${NUTRITION_TIPS.map(x => `<li>${esc(x)}</li>`).join('')}</ul></details>`);
+    parts.push(`<section class="card" id="nut-ring">
       <div class="kcal-row">
         <div class="ring"><svg viewBox="0 0 112 112"><circle cx="56" cy="56" r="48" fill="none" stroke="var(--line)" stroke-width="10"/><circle cx="56" cy="56" r="48" fill="none" stroke="var(--lower)" stroke-width="10" stroke-linecap="round" stroke-dasharray="${C}" stroke-dashoffset="${C * (1 - frac)}"/></svg>
-          <div class="c"><b>${nf(kcal, 0)}</b><span>de ${nf(tg.kcal, 0)} kcal</span></div></div>
+          <div class="c"><b>${nf(kcal, 0)}</b><span>de ${nf(tg.kcal, 0)} kcal</span><span class="${left >= 0 ? 'up-t' : 'warn-t'}">${left >= 0 ? nf(left, 0) + ' libres' : nf(-left, 0) + ' de más'}</span></div></div>
         <div class="bars">
-          ${bar('Proteína', prot, tg.p)}${bar('Grasa', fat, tg.g)}${bar('Carbos', carb, tg.c)}
+          ${bar('Proteína', prot, tg.p)}${bar('Carbos', carb, tg.c)}${bar('Grasa', fat, tg.g)}
         </div>
       </div>
-      <p class="small muted">Plan del día: ≈${nf(planKcal, 0)} kcal. Marca cada alimento cuando lo comas. Toca su nombre para cambiarlo por otro.</p>
+      <p class="small muted">Marca cada alimento cuando lo comas, o toda la comida con el cuadro de arriba. Toca un alimento para cambiar la cantidad o reemplazarlo.</p>
     </section>`);
-    parts.push(`<section class="card"><div class="card-head"><h3>Agua</h3><span class="small muted">meta 2 L</span></div>
-      <div class="water"><span class="wv">${nf(day.water / 1000, 2)} L</span>
-      <button class="btn small ghost" data-a="water" data-v="-250" aria-label="Restar 250 ml">−</button>
-      <button class="btn small ghost" data-a="water" data-v="250">+250 ml</button>
-      <button class="btn small ghost" data-a="water" data-v="500">+500 ml</button></div></section>`);
-    meals.forEach(m => {
-      const mk = m.foods.reduce((a, f) => a + f.kcal, 0);
+    const water = day.water || 0;
+    parts.push(`<section class="card"><div class="card-head"><span class="eyebrow">💧 Hidratación</span><span class="wv"><b>${nf(water / 1000, 2)}</b> / ${nf(waterGoal() / 1000, 1)} L</span></div>
+      <div class="track wtrack"><span style="width:${Math.min(100, water / waterGoal() * 100)}%"></span></div>
+      <div class="wbtns"><button data-a="water" data-v="250">+ Vaso 250</button><button data-a="water" data-v="500">+ Botella 500</button><button data-a="water" data-v="1000">+ 1 L</button>
+        <button class="wide" data-a="water-other">+ Otro…</button><button data-a="water" data-v="-250" aria-label="Restar 250 ml">−</button></div></section>`);
+    parts.push(`<button class="card toolbtn" data-a="copy-day">⧉ Copiar otro día completo acá</button>`);
+    meals.forEach((m, mi) => {
+      const planned = m.foods.filter(f => !f.extra && !f.free);
+      const allOn = planned.length > 0 && planned.every(f => day.on.includes(f.id));
+      const got = sumFoods(m.foods.filter(eaten));
+      const base = sumFoods(baseMeals[mi].foods);
+      const custom = m.foods.some(f => f.extra || f.swappedFrom || f.factor);
       const foods = m.foods.map(f => {
         const on = eaten(f);
         const tick = f.extra
           ? `<span class="tick on" aria-hidden="true">✓</span>`
           : `<button class="tick" data-a="food" data-id="${f.id}" aria-pressed="${on}" aria-label="Marcar ${esc(f.name)}">✓</button>`;
-        const nameEl = f.free || f.extra
-          ? `<div class="fname">${esc(f.name)}</div>`
-          : `<button class="fname" data-a="swap-food" data-id="${f.id}">${esc(f.name)}</button>`;
+        const nameEl = f.free ? `<div class="fname">${esc(f.name)}</div>` : `<button class="fname" data-a="edit-food" data-id="${f.id}">${esc(f.name)}</button>`;
         const notes = [
           f.cutPortion && !f.swappedFrom ? '<div class="cut-note">Porción de mini cut</div>' : '',
-          f.fixed ? '<div class="fixed-note">Fijo</div>' : '',
+          f.fixed && !f.factor ? '<div class="fixed-note">Fijo</div>' : '',
           f.swappedFrom ? `<div class="swap-note">En vez de ${esc(f.swappedFrom)} · <button class="linkbtn small" data-a="unswap" data-id="${f.id}">volver al original</button></div>` : '',
-          f.extra ? `<div class="swap-note">Agregado · <button class="linkbtn small" data-a="del-extra" data-id="${f.id}">quitar</button></div>` : ''
+          f.factor ? `<div class="swap-note">Cantidad cambiada · <button class="linkbtn small" data-a="unqty" data-id="${f.id}">volver a lo del plan</button></div>` : '',
+          f.extra ? `<div class="swap-note">Agregado · <button class="linkbtn small" data-a="del-extra" data-id="${f.id}">quitar</button></div>` : '',
+          !f.free && !f.extra ? `<button class="eqb" data-a="swap-food" data-id="${f.id}">⇄ Equivalencias</button>` : ''
         ].join('');
         return `<div class="food ${on ? 'on' : ''}">${tick}
           <div style="min-width:0">${nameEl}<div class="fq">${esc(f.qty)}</div>${notes}</div>
           <div class="fk">${f.free ? '<b>libre</b>no se cuenta' : `<b>${f.estimate ? '≈' : ''}${f.kcal}</b>kcal${f.estimate ? '<br>por confirmar' : `<br>P ${fmtM(f.p)} · G ${fmtM(f.g)} · C ${fmtM(f.c)}`}`}</div></div>`;
       }).join('');
-      parts.push(`<section class="card flush"><div class="meal-head"><h3>${esc(m.name)}</h3><span class="mk">${mk} kcal</span></div>${foods}
+      parts.push(`<section class="card flush"><div class="meal-head">
+          ${planned.length ? `<button class="mtick ${allOn ? 'on' : ''}" data-a="meal-all" data-meal="${m.id}" aria-pressed="${allOn}" aria-label="Marcar toda la comida">✓</button>` : ''}
+          <div class="grow"><h3 class="${allOn ? 'up-t' : ''}">${esc(m.name)}</h3>${custom ? '<span class="eyebrow up-t">Personalizado</span>' : ''}</div>
+          <span class="mk"><b>${nf(got.kcal, 0)}</b> / ${nf(base.kcal, 0)} kcal</span></div>
+        <div class="meal-mac">P ${fmtM(got.p)}/${fmtM(base.p)} · C ${fmtM(got.c)}/${fmtM(base.c)} · G ${fmtM(got.g)}/${fmtM(base.g)}</div>
+        ${foods}
         <button class="addfood" data-a="add-food" data-meal="${m.id}">+ Agregar alimento</button></section>`);
     });
-    parts.push(`<section class="card"><h3>Indicaciones</h3><ul class="tips">${NUTRITION_TIPS.map(t => `<li>${esc(t)}</li>`).join('')}</ul></section>`);
+    if (dayHasCustom(S.food[date])) parts.push(`<button class="card toolbtn" data-a="restore-day" data-d="${date}">↺ Restaurar dieta base del día</button>`);
+    parts.push(`<section class="card form"><label class="eyebrow" for="nut-note">Nota del día</label>
+      <textarea id="nut-note" data-nnote="${date}" placeholder="Ej.: comí fuera, antojos, digestión…">${esc(day.note || '')}</textarea>
+      <span class="small muted">${esc(S.settings.coachName)} la ve junto a tus comidas.</span></section>`);
     return { title: 'Nutrición', html: parts.join(''), pill: phasePill(date) };
   }
 
-  // Selector de alimentos (hoja inferior): equivalentes, búsqueda, cantidad y alimentos propios.
+  // Barra fija con calorías y macros del día, visible cuando el resumen de arriba sale de la pantalla.
+  let mbObs = null;
+  function setupMacrobar() {
+    if (mbObs) { mbObs.disconnect(); mbObs = null; }
+    const bar = document.getElementById('macrobar'), ring = document.getElementById('nut-ring');
+    if (!bar || !ring || !('IntersectionObserver' in window)) return;
+    const h = document.getElementById('hdr').offsetHeight;
+    bar.style.top = h + 'px';
+    mbObs = new IntersectionObserver(([e]) => { bar.hidden = e.isIntersecting || e.boundingClientRect.top > h; }, { rootMargin: `-${h}px 0px 0px 0px` });
+    mbObs.observe(ring);
+  }
+
+  // Selector de alimentos (hoja inferior): equivalentes, categorías, búsqueda, cantidad, agregado rápido y alimentos propios.
   let picker = null;
   const nutDate = () => { const { name, arg } = current(); return (name === 'nutricion' && arg) || today(); };
-  function searchFoods(q) {
+  const CATS = [['', 'Recientes'], ['proteina', 'Proteína'], ['carbo', 'Carbo'], ['grasa', 'Grasa'], ['lacteo', 'Lácteo'], ['fruta', 'Fruta'], ['verdura', 'Vegetal'], ['otros', 'Otros']];
+  function searchFoods(q, cat) {
     const qn = norm(q.trim());
-    if (!qn) {
+    if (!qn && !cat) {
       const recent = S.recentFoods.map(findFood).filter(f => f && !S.myFoods.includes(f));
       return S.myFoods.slice().reverse().concat(recent).slice(0, 15);
     }
-    const words = qn.split(/\s+/);
+    const words = qn ? qn.split(/\s+/) : [];
     return S.myFoods.concat(FOODS)
-      .filter(f => { const n = norm(f.n); return words.every(w => n.includes(w)); })
-      .sort((a, b) => (Number(norm(b.n).startsWith(qn)) - Number(norm(a.n).startsWith(qn))) || a.n.localeCompare(b.n, 'es'))
-      .slice(0, 40);
+      .filter(f => (!cat || f.cat === cat) && words.every(w => norm(f.n).includes(w)))
+      .sort((a, b) => (Number(!!S.usual[b.id]) - Number(!!S.usual[a.id])) || (qn ? Number(norm(b.n).startsWith(qn)) - Number(norm(a.n).startsWith(qn)) : 0) || a.n.localeCompare(b.n, 'es'))
+      .slice(0, 60);
   }
   function fpItem(f) {
     const t = picker.target;
     let right = `<b>${f.kcal}</b>kcal/100 g`;
     if (t) { const g = eqGrams(t, f); right = `<b>${fmtM(g)} g</b>${portion(f, g).kcal} kcal`; }
     const mine = S.myFoods.includes(f);
+    const usual = S.usual[f.id];
     return `<button class="fp-item" data-a="fp-pick" data-fid="${esc(f.id)}"><span class="grow"><span class="t">${esc(f.n)}</span>
-      <span class="s">${mine ? 'Mi alimento · ' : ''}por 100 g: P ${fmtM(f.p)} · G ${fmtM(f.g)} · C ${fmtM(f.c)}${f.src && !mine ? ' · ' + esc(f.src) : ''}</span></span><span class="r">${right}</span></button>`;
+      <span class="s">${mine ? 'Mi alimento · ' : ''}por 100 g: P ${fmtM(f.p)} · G ${fmtM(f.g)} · C ${fmtM(f.c)}${f.src && !mine ? ' · ' + esc(f.src) : ''}</span>
+      ${usual ? `<span class="s">Sueles usar <b class="up-t">${fmtM(usual)} g</b></span>` : ''}</span><span class="r">${right}</span></button>`;
   }
-  function resultsHtml(q) {
-    const list = searchFoods(q);
-    if (!list.length) return q.trim() ? `<p class="muted small">No encontré «${esc(q)}». Créalo con la información de su etiqueta.</p>` : `<p class="muted small">Escribe para buscar entre ${FOODS.length} alimentos. Los que uses o crees aparecen aquí.</p>`;
-    return (q.trim() ? '' : '<div class="eyebrow">Mis alimentos y recientes</div>') + list.map(fpItem).join('');
+  function resultsHtml(q, cat) {
+    const list = searchFoods(q, cat);
+    if (!list.length) return q.trim() ? `<p class="muted small">No encontré «${esc(q)}». Créalo con la información de su etiqueta.</p>` : `<p class="muted small">Escribe para buscar entre ${FOODS.length} alimentos, o elige una categoría. Los que uses o crees aparecen aquí.</p>`;
+    return (q.trim() || cat ? '' : '<div class="eyebrow">Mis alimentos y recientes</div>') + list.map(fpItem).join('');
   }
   function renderPicker() {
     const p = picker;
     if (p.step === 'amount') return renderAmount();
     if (p.step === 'create') return renderCreate();
+    if (p.step === 'quick') return renderQuick();
     const t = p.target;
     const meal = MEALS.find(m => m.id === p.meal);
     const head = t
-      ? `<h2>Cambiar ${esc(t.name)}</h2><p class="muted small">En el plan: ${esc(t.qty)} · ${t.kcal} kcal. Las cantidades sugeridas igualan ${MATCH_LABEL[MATCH[t.cat] || 'kcal']}.</p>`
-      : `<h2>Agregar a ${esc(meal ? meal.name.toLowerCase() : 'la comida')}</h2>`;
+      ? `<div><span class="eyebrow">Reemplazar</span><h2>${esc(t.name)}</h2></div><p class="muted small">En el plan: ${esc(t.qty)} · ${t.kcal} kcal. Las cantidades sugeridas igualan ${MATCH_LABEL[MATCH[t.cat] || 'kcal']}.</p>`
+      : `<div><span class="eyebrow">Agregar</span><h2>${esc(meal ? meal.name : 'Alimento')}</h2></div>`;
     const sugg = t ? (t.alts || []).map(foodByName).filter(Boolean) : [];
     openSheet(`${head}
-      ${sugg.length ? `<div class="eyebrow">Equivalentes</div><div class="fp-list">${sugg.map(fpItem).join('')}</div>` : ''}
-      <label class="eyebrow" for="fp-q">Buscar alimento</label>
-      <input class="inp" id="fp-q" type="search" placeholder="Ej.: marraqueta, yogur, pollo" autocomplete="off" value="${esc(p.q || '')}">
-      <div class="fp-list" id="fp-results">${resultsHtml(p.q || '')}</div>
-      <button class="btn block ghost" data-a="fp-create">+ Crear alimento</button>
+      <input class="inp" id="fp-q" type="search" placeholder="Buscar alimento… ej.: marraqueta, yogur, pollo" autocomplete="off" value="${esc(p.q || '')}" aria-label="Buscar alimento">
+      <div class="cattabs" role="tablist">${CATS.map(([id, l]) => `<button type="button" role="tab" class="${(p.cat || '') === id ? 'on' : ''}" aria-selected="${(p.cat || '') === id}" data-a="fp-cat" data-v="${id}">${l}</button>`).join('')}</div>
+      <div class="two">${t ? '' : '<button class="btn soft" data-a="fp-quick">⚡ Agregado rápido</button>'}<button class="btn soft" data-a="fp-create">+ Crear alimento</button></div>
+      ${sugg.length && !p.q && !p.cat ? `<div class="eyebrow">Equivalentes del plan</div><div class="fp-list">${sugg.map(fpItem).join('')}</div>` : ''}
+      <div class="fp-list" id="fp-results">${resultsHtml(p.q || '', p.cat || '')}</div>
       <button class="btn block ghost" data-a="close">Cancelar</button>`);
   }
+  const macroTiles = q => `<div class="mtiles"><div><b>${fmtM(q.p)}</b><span>Proteína</span></div><div><b>${fmtM(q.c)}</b><span>Carbos</span></div><div><b>${fmtM(q.g)}</b><span>Grasas</span></div><div><b>${nf(q.kcal, 0)}</b><span>Kcal</span></div></div>`;
   function amountTotals() {
     const p = picker, f = p.sel, g = num(p.grams) || 0;
     const q = portion(f, g);
-    let html = `<b>${q.kcal} kcal</b> · P ${fmtM(q.p)} g · G ${fmtM(q.g)} g · C ${fmtM(q.c)} g`;
+    let html = macroTiles(q);
     if (p.target && p.target.kcal > 0) {
       const d = q.kcal - p.target.kcal;
-      html += `<br><span class="muted">Plan: ${p.target.kcal} kcal · P ${fmtM(p.target.p)} · G ${fmtM(p.target.g)} · C ${fmtM(p.target.c)} (${d >= 0 ? '+' : ''}${d} kcal)</span>`;
+      html += `<p class="small muted">En el plan: ${p.target.kcal} kcal · P ${fmtM(p.target.p)} · G ${fmtM(p.target.g)} · C ${fmtM(p.target.c)} (${d >= 0 ? '+' : ''}${d} kcal)</p>`;
     }
     return html;
   }
@@ -856,31 +1018,78 @@
     const p = picker, f = p.sel;
     const opts = [];
     if (p.target) opts.push(['Equivalente', eqGrams(p.target, f)]);
+    if (S.usual[f.id]) opts.push(['Lo de siempre', S.usual[f.id]]);
     if (f.u) {
       const unit = f.u[0].replace(/^1 /, '');
       opts.push([f.u[0], f.u[1]], ['½ ' + unit, r1(f.u[1] / 2)], ['2 × ' + unit, f.u[1] * 2]);
     }
     opts.push(['', 100]);
-    openSheet(`<h2>${esc(f.n)}</h2>
-      <p class="muted small">Por 100 g: ${f.kcal} kcal · P ${fmtM(f.p)} · G ${fmtM(f.g)} · C ${fmtM(f.c)}${f.src ? ' · ' + esc(f.src) : ''}</p>
-      <div class="q"><label for="fp-g">¿Cuántos gramos comiste?</label><div class="inp-u"><input class="inp" id="fp-g" inputmode="decimal" autocomplete="off" value="${esc(String(p.grams).replace('.', ','))}"><span class="u">g</span></div></div>
+    openSheet(`<button class="linkbtn" data-a="fp-back">← Volver</button>
+      <div><h2>${esc(f.n)}</h2><p class="muted small">Se mide en gramos · ${f.kcal} kcal/100 g${f.src ? ' · ' + esc(f.src) : ''}</p></div>
+      <div class="q"><label for="fp-g" class="eyebrow">Cantidad (gramos)</label><div class="inp-u"><input class="inp" id="fp-g" inputmode="decimal" autocomplete="off" value="${esc(String(p.grams).replace('.', ','))}"><span class="u">g</span></div>
+        ${!p.target && S.usual[f.id] && Number(p.grams) === S.usual[f.id] ? '<span class="small muted">Lo que sueles usar. Cámbialo si hoy es distinto.</span>' : ''}</div>
       <div class="chipsel">${opts.map(([l, g]) => `<button type="button" data-a="fp-g" data-v="${g}">${l ? esc(l) + ' ' : ''}<span class="${l ? 'muted' : ''}">${fmtM(g)} g</span></button>`).join('')}</div>
-      <p class="fp-tot" id="fp-tot">${amountTotals()}</p>
-      <button class="btn block" data-a="fp-save">${p.target ? 'Guardar cambio' : 'Agregar'}</button>
-      <button class="btn block ghost" data-a="fp-back">Volver</button>`);
+      <div id="fp-tot">${amountTotals()}</div>
+      <button class="btn block" data-a="fp-save">${p.target ? 'Guardar cambio' : 'Agregar'}</button>`);
+  }
+  function renderQuick() {
+    const field = (id, label, unit) => `<div class="q"><label for="${id}">${label}</label><div class="inp-u"><input class="inp" id="${id}" inputmode="decimal" autocomplete="off"><span class="u">${unit}</span></div></div>`;
+    openSheet(`<button class="linkbtn" data-a="fp-back">← Volver</button>
+      <div><span class="eyebrow">Agregado rápido</span><h2>Anotar calorías y macros</h2></div>
+      <p class="muted small">Para cuando comes algo que no está en la lista y sabes (o calculas) sus calorías. Si solo pones los macros, las calorías se calculan solas.</p>
+      <div class="q"><label for="qa-n">Qué fue <span class="hint">opcional</span></label><input class="inp" id="qa-n" autocomplete="off" placeholder="Ej.: empanada de queso"></div>
+      ${field('qa-kcal', 'Calorías', 'kcal')}
+      <div class="two">${field('qa-p', 'Proteína', 'g')}${field('qa-c', 'Carbos', 'g')}</div>
+      ${field('qa-g', 'Grasas', 'g')}
+      <button class="btn block" data-a="qa-save">Agregar</button>`);
+  }
+
+  // Editor de un alimento del día: cantidad (porciones del plan o gramos), reemplazo y quitar.
+  let editor = null;
+  function editorFood() {
+    const day = S.food[editor.date] || { on: [] };
+    return mealsFor(editor.date, day).flatMap(m => m.foods).find(x => x.id === editor.id) || null;
+  }
+  function editorCalc() {
+    const f = editorFood(); if (!f) return null;
+    const v = num(editor.val) || 0;
+    if (editor.kind === 'plan') { const b = f.plan || f; return { kcal: Math.round(b.kcal * v), p: r1(b.p * v), g: r1((b.g || 0) * v), c: r1((b.c || 0) * v) }; }
+    if (editor.food) return portion(editor.food, v);
+    return { kcal: f.kcal, p: f.p, g: f.g, c: f.c };
+  }
+  function renderEditor() {
+    const f = editorFood(); if (!f) { closeSheet(); return; }
+    const k = editor.kind;
+    let field = '';
+    if (k === 'plan') {
+      const b = f.plan || f;
+      const opts = [[0.5, '½'], [0.75, '¾'], [1, '1'], [1.25, '1¼'], [1.5, '1½'], [2, '2']];
+      field = `<div class="q"><label class="eyebrow" for="ed-v">Porciones del plan</label><p class="small muted">1 porción = ${esc(b.qty)}</p>
+        <div class="inp-u"><input class="inp" id="ed-v" inputmode="decimal" autocomplete="off" value="${esc(String(editor.val).replace('.', ','))}"><span class="u">× porción</span></div></div>
+        <div class="chipsel">${opts.map(([o, l]) => `<button type="button" data-a="ed-set" data-v="${o}">${l} ×</button>`).join('')}</div>`;
+    } else if (editor.food) {
+      field = `<div class="q"><label class="eyebrow" for="ed-v">Cantidad (gramos)</label><div class="inp-u"><input class="inp" id="ed-v" inputmode="decimal" autocomplete="off" value="${esc(String(editor.val).replace('.', ','))}"><span class="u">g</span></div></div>`;
+    }
+    const canSwap = k !== 'extra';
+    openSheet(`<h2>${esc(f.name)}</h2>
+      ${f.swappedFrom ? `<p class="small muted">En vez de ${esc(f.swappedFrom)}</p>` : ''}
+      ${field}
+      <div id="ed-tot">${macroTiles(editorCalc())}</div>
+      ${canSwap ? `<button class="btn block soft" data-a="swap-food" data-id="${f.id}">⇄ Cambiar por otro alimento</button>` : ''}
+      <div class="two">${k === 'extra' ? `<button class="btn danger" data-a="del-extra" data-id="${f.id}">Eliminar</button>` : (k === 'swap' ? `<button class="btn ghost" data-a="unswap" data-id="${f.id}">Volver al plan</button>` : `<button class="btn ghost" data-a="close">Cancelar</button>`)}
+        ${field ? '<button class="btn" data-a="ed-save">Guardar</button>' : '<button class="btn ghost" data-a="close">Cerrar</button>'}</div>`);
   }
   function renderCreate() {
     const p = picker;
     const field = (id, label, unit, val) => `<div class="q"><label for="${id}">${label}</label><div class="inp-u"><input class="inp" id="${id}" inputmode="decimal" autocomplete="off" value="${esc(val || '')}"><span class="u">${unit}</span></div></div>`;
-    openSheet(`<h2>Crear alimento</h2>
+    openSheet(`<button class="linkbtn" data-a="fp-back">← Volver</button><h2>Crear alimento</h2>
       <p class="muted small">Copia la información nutricional de la etiqueta, la columna de 100 g. Queda guardado para la próxima vez.</p>
       <div class="q"><label for="fc-n">Nombre</label><input class="inp" id="fc-n" autocomplete="off" value="${esc(p.q || '')}" placeholder="Ej.: Pan pita integral Ideal"></div>
       <div class="two">${field('fc-kcal', 'Energía', 'kcal')}${field('fc-p', 'Proteínas', 'g')}</div>
       <div class="two">${field('fc-g', 'Grasas totales', 'g')}${field('fc-c', 'H. de C. disponibles', 'g')}</div>
       <p class="small muted">Opcional: una porción para elegirla rápido.</p>
       <div class="two"><div class="q"><label for="fc-un">Porción</label><input class="inp" id="fc-un" autocomplete="off" placeholder="1 unidad"></div>${field('fc-ug', 'Gramos de la porción', 'g')}</div>
-      <button class="btn block" data-a="fc-save">Guardar alimento</button>
-      <button class="btn block ghost" data-a="fp-back">Volver</button>`);
+      <button class="btn block" data-a="fc-save">Guardar alimento</button>`);
   }
 
   function scaleButtons(field, from, to, value, date) {
@@ -892,30 +1101,77 @@
     return `<div class="seg">${Object.entries(options).map(([k, l]) => `<button type="button" class="${value === k ? 'on' : ''}" data-a="ci-set" data-k="${field}" data-v="${k}" data-d="${date}">${l}</button>`).join('')}</div>`;
   }
 
+  const ENERGY_L = { baja: '🪫 Baja', promedio: '😐 Promedio', alta: '⚡ Alta' };
+  const ESTRES_L = { alto: '😰 Alto', promedio: '😐 Promedio', bajo: '😌 Bajo' };
+  const YESNO = { no: 'No', si: 'Sí' };
+  const hasVal = v => v !== undefined && v !== null && String(v).trim() !== '';
+  // Tira de los 7 días de la semana de una fecha, con su estado (completo, pendiente o futuro).
+  function ciStrip(monday, selected) {
+    const t = today();
+    return Array.from({ length: 7 }, (_, i) => {
+      const d = addDays(monday, i);
+      const future = d > t;
+      const cls = ['dc', dayDone(d) ? 'done' : (future ? 'future' : 'pending'), d === t ? 'today' : '', d === selected ? 'sel' : ''].join(' ');
+      return `<a class="${cls}" href="#/checkin/${d}"><span class="d">${DOW[i]}</span><span class="n">${parse(d).getDate()}</span><span class="m">${dayDone(d) ? '✓' : (future ? '' : '–')}</span></a>`;
+    }).join('');
+  }
+
   function viewCheckinDay(date) {
     if (date > today()) return viewNotFound();
     const c = S.checkins[date] || {};
     const tg = targets(date);
+    const v2 = date >= CORE.CI_V2_FROM;
+    const daySes = S.sessions.filter(s => s.date === date);
+    const miss = missingOn(date);
+    const dot = ok => `<span class="qdot ${ok ? 'on' : ''}" aria-hidden="true"></span>`;
+    const q = (label, ok, body, opts = {}) => `<div class="q"><span class="ql">${label}${opts.key === false ? '' : ' <span class="clave">Clave</span>'}${dot(ok)}</span>${opts.hint ? `<span class="small muted">${opts.hint}</span>` : ''}${body}</div>`;
+    const sec = (icon, title, qs) => { const list = qs.filter(Boolean); return `<section class="card form ci-sec"><div class="ci-sh"><span class="ci-ic" aria-hidden="true">${icon}</span><div><h3>${title}</h3><span class="eyebrow">${list.length} campos</span></div></div>${list.join('')}</section>`; };
+    const txt = (k, ph) => `<textarea data-ci="${k}" data-d="${date}" placeholder="${esc(ph)}">${esc(c[k])}</textarea>`;
+
+    const bio = [
+      q('Peso corporal en ayunas', c.noPeso || hasVal(c.peso), `${c.noPeso ? `<p class="muted">Este día no te pesaste.</p>` : `<div class="inp-u"><input class="inp" id="ci-peso" inputmode="decimal" data-ci="peso" data-d="${date}" value="${esc(c.peso)}" placeholder="0,0"><span class="u">kg</span></div>`}
+        <button type="button" class="btn ghost block small" data-a="ci-set" data-k="noPeso" data-v="${c.noPeso ? '' : '1'}" data-d="${date}">${c.noPeso ? 'Sí me pesé' : '⊘ No me pesé este día'}</button>`,
+        { hint: 'Apenas despiertas, después de ir al baño y antes de tomar agua o comer.' }),
+      v2 ? q('¿Algo fuera de lo común?', hasVal(c.fuera), segButtons('fuera', YESNO, c.fuera, date) + (c.fuera === 'si' ? txt('fueraTxt', '¿Qué pasó? Ej.: me enfermé, viaje, fiesta, comí fuera…') : ''), { hint: 'Cualquier cosa que pueda mover tu peso o tu energía.' }) : '',
+      q('Niveles de energía', hasVal(c.energy), segButtons('energy', ENERGY_L, c.energy, date)),
+      v2 ? q('Niveles de estrés', hasVal(c.estres), segButtons('estres', ESTRES_L, c.estres, date)) : '',
+      PAIN ? q(`Dolor de ${esc(PAIN.label)}`, hasVal(c.hombro), scaleButtons('hombro', 0, 10, c.hombro, date) + '<div class="scale-ends"><span>Nada</span><span>Mucho</span></div>') : ''
+    ];
+    const sleep = [
+      q('Horas de sueño', hasVal(c.sleepH), `<div class="two"><div class="inp-u"><input class="inp" id="ci-sh" inputmode="numeric" pattern="[0-9]*" data-ci="sleepH" data-d="${date}" value="${esc(c.sleepH)}" placeholder="7" aria-label="Horas de sueño"><span class="u">h</span></div>
+        <div class="inp-u"><input class="inp" id="ci-sm" inputmode="numeric" pattern="[0-9]*" data-ci="sleepM" data-d="${date}" value="${esc(c.sleepM)}" placeholder="0" aria-label="Minutos de sueño"><span class="u">min</span></div></div>`, { hint: 'Lo que dormiste la noche anterior.' }),
+      q('Calidad del sueño', hasVal(c.sleepQ), scaleButtons('sleepQ', 1, 5, c.sleepQ, date) + '<div class="scale-ends"><span>Muy mala</span><span>Excelente</span></div>')
+    ];
+    const entrenoOpts = [['', 'Elige…']].concat(ROUTINE_ORDER.map(r => [r, ROUTINES[r].name]), [['descanso', 'Descanso'], ['otro', 'Otro']]);
+    const train = [
+      v2 ? q('¿Qué entrenamiento?', daySes.length > 0 || hasVal(c.entreno), daySes.length
+        ? `<p class="saved">Registrado en la app: ${daySes.map(s => esc(ROUTINES[s.routine].name)).join(', ')} ✓</p>`
+        : `<select class="inp" data-ci="entreno" data-d="${date}" aria-label="Qué entrenamiento">${entrenoOpts.map(([v, l]) => `<option value="${v}" ${String(c.entreno || '') === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>
+          ${c.entreno === 'otro' ? `<input class="inp" data-ci="entrenoTxt" data-d="${date}" value="${esc(c.entrenoTxt)}" placeholder="¿Qué hiciste?">` : ''}`,
+        { hint: daySes.length ? '' : 'Elige el entrenamiento que hiciste, o marca «Descanso» u «Otro».' }) : '',
+      q('Sesión de cardio', hasVal(c.cardio), segButtons('cardio', YESNO, c.cardio, date) + (c.cardio === 'si' ? `<input class="inp" data-ci="cardioTxt" data-d="${date}" value="${esc(c.cardioTxt)}" placeholder="Ej.: 30 min de bici">` : ''), { key: false }),
+      q('Pasos diarios', hasVal(c.pasos), `<div class="inp-u wide-u"><input class="inp" id="ci-pasos" inputmode="numeric" pattern="[0-9]*" data-ci="pasos" data-d="${date}" value="${esc(c.pasos)}" placeholder="0"><span class="u">/ ${nf(tg.steps, 0)} pasos</span></div>`, { hint: 'El número real de tu contador, sin redondear.' }),
+      q('¿Actividad adicional?', hasVal(c.extraAct), segButtons('extraAct', YESNO, c.extraAct, date) + (c.extraAct === 'si' ? `<input class="inp" data-ci="extraActTxt" data-d="${date}" value="${esc(c.extraActTxt)}" placeholder="Ej.: caminata larga, baile, piscina">` : ''), { key: false })
+    ];
+    const nut = [
+      q('Adherencia al plan (1–10)', hasVal(c.adh), `<details class="howto"><summary>¿Cómo se mide? ▾</summary><p class="small">10 = comiste todo lo del plan, pesado o medido. 8–9 = casi todo, con algún cambio pequeño. 6–7 = te saliste en una comida. 5 o menos = te saliste en varias comidas o comiste bastante fuera del plan. Responde con sinceridad: sirve para ajustar el plan, no para juzgar.</p></details>
+        ${scaleButtons('adh', 1, 10, c.adh, date)}`),
+      q('Nota del día', hasVal(c.nota), txt('nota', 'Cómo te sentiste, antojos, digestión, dudas…'), { key: false })
+    ];
+    const next = addDays(date, 1);
+    const cta = next <= today()
+      ? `<a class="btn block lower" href="#/checkin/${next}">Completar ${esc(cap(DOW_LONG[dowIdx(next)]))} ${parse(next).getDate()} →</a>`
+      : `<a class="btn block lower" href="#/checkin">${miss.length ? 'Volver' : 'Listo ✓'}</a>`;
     const html = `
-      <div class="wk-head lower"><span class="eyebrow">Registro diario</span><span class="rname" style="font-size:1.8rem">${esc(fmtDay(date).charAt(0).toUpperCase() + fmtDay(date).slice(1))}</span>
-      <p class="small muted">Todos los datos son obligatorios, entrenes o no. Se guarda solo mientras escribes.</p></div>
-      <section class="card form">
-        <div class="q"><label for="ci-pasos">Pasos <span class="hint">meta ${nf(tg.steps, 0)}</span></label>
-          <div class="inp-u"><input class="inp" id="ci-pasos" inputmode="numeric" pattern="[0-9]*" data-ci="pasos" data-d="${date}" value="${esc(c.pasos)}" placeholder="0"><span class="u">pasos</span></div></div>
-        <div class="q"><span class="ql">Sueño de anoche</span>
-          <div class="two"><div class="inp-u"><input class="inp" id="ci-sh" inputmode="numeric" pattern="[0-9]*" data-ci="sleepH" data-d="${date}" value="${esc(c.sleepH)}" placeholder="7" aria-label="Horas de sueño"><span class="u">h</span></div>
-          <div class="inp-u"><input class="inp" id="ci-sm" inputmode="numeric" pattern="[0-9]*" data-ci="sleepM" data-d="${date}" value="${esc(c.sleepM)}" placeholder="0" aria-label="Minutos de sueño"><span class="u">min</span></div></div></div>
-        <div class="q"><span class="ql">Calidad del sueño</span>${scaleButtons('sleepQ', 1, 5, c.sleepQ, date)}<div class="scale-ends"><span>Muy mala</span><span>Excelente</span></div></div>
-        <div class="q"><span class="ql">Cumplimiento de la dieta <span class="hint">10 = todo pesado y según el plan</span></span>${scaleButtons('adh', 1, 10, c.adh, date)}</div>
-        <div class="q"><label for="ci-peso">Peso en ayunas <span class="hint">después del baño</span></label>
-          ${c.noPeso ? `<p class="muted">Hoy no te pesaste.</p>` : `<div class="inp-u"><input class="inp" id="ci-peso" inputmode="decimal" data-ci="peso" data-d="${date}" value="${esc(c.peso)}" placeholder="56,0"><span class="u">kg</span></div>`}
-          <button type="button" class="linkbtn" data-a="ci-set" data-k="noPeso" data-v="${c.noPeso ? '' : '1'}" data-d="${date}">${c.noPeso ? 'Sí me pesé' : 'No me pesé hoy'}</button></div>
-        ${PAIN ? `<div class="q"><span class="ql">Dolor de ${esc(PAIN.label)} <span class="hint">0 = nada, 10 = mucho</span></span>${scaleButtons('hombro', 0, 10, c.hombro, date)}</div>` : ''}
-        <div class="q"><span class="ql">Energía</span>${segButtons('energy', ENERGY, c.energy, date)}</div>
-        <div class="q"><label for="ci-nota">Nota del día</label><textarea id="ci-nota" data-ci="nota" data-d="${date}" placeholder="Algo fuera de lo común, cómo te sentiste…">${esc(c.nota)}</textarea></div>
-      </section>
-      ${dayComplete(c) ? '<div class="notice ok"><div><b>Día completo.</b> Gracias.</div></div>' : `<div class="notice"><div><b>Te falta:</b> ${esc(CORE.checkinMissing(c).join(', '))}.</div></div>`}
-      <a class="btn block lower" href="#/checkin">${dayComplete(c) ? 'Listo' : 'Volver'}</a>`;
+      <div class="daystrip">${ciStrip(mondayOf(date), date)}</div>
+      <div class="wk-head lower"><span class="eyebrow">Registro diario</span><span class="rname" style="font-size:1.8rem">${esc(cap(fmtDay(date)))}</span></div>
+      ${miss.length ? `<div class="notice"><div><b>Te ${miss.length === 1 ? 'falta 1 dato clave' : `faltan ${miss.length} datos clave`} para cerrar este día:</b> ${esc(miss.join(', '))}.</div></div>` : '<div class="notice ok"><div><b>Día completo.</b> Gracias.</div></div>'}
+      ${sec('💪', 'Biofeedback', bio)}
+      ${sec('😴', 'Sueño', sleep)}
+      ${sec('🏋️', 'Entrenamiento', train)}
+      ${sec('🥗', 'Nutrición', nut)}
+      <p class="small muted">Se guarda solo mientras escribes.</p>
+      <div class="sticky-cta">${cta}</div>`;
     return { title: 'Check-in', back: '#/checkin', html };
   }
 
@@ -926,27 +1182,35 @@
     const isCurrent = monday === mondayOf(t);
     const parts = [];
     const sent = S.sent[monday];
-    parts.push(`<div class="daynav"><button data-a="ci-week" data-d="${addDays(monday, -7)}" aria-label="Semana anterior">‹</button><span class="dl">${isCurrent ? 'Esta semana' : 'Semana del ' + fmtShort(monday)}</span><button data-a="ci-week" data-d="${addDays(monday, 7)}" aria-label="Semana siguiente" ${isCurrent ? 'disabled style="opacity:.3"' : ''}>›</button></div>`);
-    const strip = st.days.map((d, i) => {
-      const c = S.checkins[d];
-      const future = d > t;
-      const cls = ['dc', dayComplete(c) ? 'done' : (future ? 'future' : 'pending'), d === t ? 'today' : ''].join(' ');
-      return `<a class="${cls}" href="#/checkin/${d}"><span class="d">${DOW[i]}</span><span class="n">${parse(d).getDate()}</span><span class="m">${dayComplete(c) ? '✓' : (future ? '' : '•')}</span></a>`;
-    }).join('');
-    parts.push(`<section class="card"><div class="card-head"><h3>Registro diario</h3><span class="small muted num">${st.registered}/7 días</span></div><div class="daystrip">${strip}</div>
-      ${isCurrent && !dayComplete(S.checkins[t]) ? `<a class="btn block lower" href="#/checkin/${t}">Registrar hoy</a>` : ''}</section>`);
-    parts.push(`<section class="card"><h3>Tu semana en números</h3><div class="stats">
-      <div class="stat"><span class="k">Peso promedio</span><span class="v">${st.peso !== null ? nf(st.peso, 1) + ' kg' : '—'}</span><span class="s">${st.pesoDelta !== null ? `${st.pesoDelta >= 0 ? '+' : ''}${nf(st.pesoDelta, 2)} kg vs anterior` : 'pésate 4 días o más'}</span></div>
+    const missing = st.days.filter(d => d <= t && d >= S.settings.startDate && !dayDone(d));
+    parts.push(`<div class="daynav"><button data-a="ci-week" data-d="${addDays(monday, -7)}" aria-label="Semana anterior">‹</button><span class="dl">${isCurrent ? 'Esta semana' : 'Semana del ' + fmtShort(monday)}<br><span class="small muted">${st.registered}/${st.days.filter(d => d <= t).length || 7} días</span></span><button data-a="ci-week" data-d="${addDays(monday, 7)}" aria-label="Semana siguiente" ${isCurrent ? 'disabled style="opacity:.3"' : ''}>›</button></div>`);
+    parts.push(`<div class="daystrip">${ciStrip(monday, null)}</div>`);
+    if (missing.length) {
+      parts.push(`<a class="btn block lower" href="#/checkin/${missing[0]}">Llenar registro diario del ${esc(fmtDay(missing[0]))} →</a>
+        <p class="small warn-t" style="margin-top:-8px">Tienes ${plural(missing.length, 'día', 'días')} sin completar ⚠️</p>`);
+    } else if (isCurrent) {
+      parts.push(`<div class="notice ok"><div><b>Registro al día.</b> Mañana toca de nuevo.</div></div>`);
+    }
+    parts.push(`<section class="card"><h3>Tu semana en números</h3><p class="small muted">Promedio de los días que llevas cargados.</p><div class="stats">
+      <div class="stat"><span class="k">Peso promedio</span><span class="v">${st.peso !== null ? nf(st.peso, 2) + ' kg' : '—'}</span><span class="s">${st.pesoDelta !== null ? `${st.pesoDelta >= 0 ? '+' : ''}${nf(st.pesoDelta, 2)} kg vs anterior` : 'pésate 4 días o más'}</span></div>
       <div class="stat"><span class="k">Pasos</span><span class="v">${st.pasos !== null ? nf(st.pasos, 0) : '—'}</span><span class="s">promedio diario</span></div>
       <div class="stat"><span class="k">Sueño</span><span class="v">${st.sleep !== null ? fmtSleep(st.sleep).replace(' min', '') : '—'}</span><span class="s">${st.sleepQ !== null ? 'calidad ' + nf(st.sleepQ, 1) + '/5' : 'promedio'}</span></div>
+      <div class="stat"><span class="k">Adherencia</span><span class="v">${st.adh !== null ? nf(st.adh, 1) : '—'}</span><span class="s">dieta /10</span></div>
       <div class="stat"><span class="k">Registros</span><span class="v">${st.registered}/7</span><span class="s">días completos</span></div>
-      <div class="stat"><span class="k">Dieta</span><span class="v">${st.adh !== null ? nf(st.adh, 1) : '—'}</span><span class="s">cumplimiento /10</span></div>
       <div class="stat"><span class="k">Entrenos</span><span class="v">${st.sessions.length}</span><span class="s">${st.hombro !== null ? 'hombro ' + nf(st.hombro, 1) + '/10' : 'esta semana'}</span></div>
     </div></section>`);
     parts.push(`<section class="card"><h3>Enviar a ${esc(S.settings.coachName)}</h3>
-      <p class="muted small">Manda el resumen el domingo en la noche o el lunes en la mañana. Se abre el menú de compartir: elige WhatsApp y el chat de ${esc(S.settings.coachName)}. Las fotos van aparte por WhatsApp cada 2 semanas.</p>
+      <p class="muted small">Se abre el menú de compartir: elige WhatsApp y el chat de ${esc(S.settings.coachName)}.</p>
       ${sent ? `<p class="saved">Enviado el ${esc(fmtDay(ymd(new Date(sent))))}</p>` : ''}
       <button class="btn block upper" data-a="send-week" data-d="${monday}">Enviar resumen semanal</button></section>`);
+    parts.push(`<section class="card prose"><h3>Cómo funciona tu check-in</h3>
+      <div class="howbox"><span class="eyebrow up-t">Tu día de check-in</span><b class="big">Domingo en la noche o lunes en la mañana</b><span class="small muted">Para esa hora, todos los días de la semana tienen que estar completos y el resumen enviado.</span></div>
+      <ul>
+        <li><b>Todos los días:</b> el registro diario, entrenes o no. Los datos «Clave» son obligatorios para cerrar el día.</li>
+        <li><b>Pésate</b> en ayunas apenas te levantas. Si un día no puedes, marca «No me pesé».</li>
+        <li><b>Cada 2 semanas:</b> medidas (Más → Medidas) y fotos por WhatsApp.</li>
+        <li>Si un día pasa algo fuera de lo común, cuéntalo: explica muchos cambios de peso.</li>
+      </ul></section>`);
     return { title: 'Check-in', html: parts.join(''), pill: phasePill(t) };
   }
 
@@ -1074,7 +1338,7 @@
 
   // ---------- Render ----------
   const TABS = [['entrenar', 'Entrenar'], ['nutricion', 'Nutrición'], ['checkin', 'Check-in'], ['mas', 'Más']];
-  const TAB_OF = { entrenar: 'entrenar', workout: 'entrenar', session: 'entrenar', historial: 'entrenar', nutricion: 'nutricion', checkin: 'checkin', mas: 'mas', plan: 'mas', medidas: 'mas', respaldo: 'mas', instalar: 'mas', coach: 'mas', cuenta: 'mas' };
+  const TAB_OF = { entrenar: 'entrenar', workout: 'entrenar', session: 'entrenar', historial: 'entrenar', bloque: 'entrenar', nutricion: 'nutricion', checkin: 'checkin', mas: 'mas', plan: 'mas', medidas: 'mas', respaldo: 'mas', instalar: 'mas', coach: 'mas', cuenta: 'mas' };
   let lastRoute = null;
 
   function current() {
@@ -1094,6 +1358,7 @@
       case 'workout': v = viewWorkout(arg); break;
       case 'session': v = viewSession(arg); break;
       case 'historial': v = viewHistorial(); break;
+      case 'bloque': v = viewBloque(); break;
       case 'nutricion': v = viewNutricion(arg); break;
       case 'checkin': v = arg && arg.length === 10 && !arg.startsWith('w') ? viewCheckinDay(arg) : viewCheckin(arg && arg.startsWith('w') ? arg.slice(1) : null); break;
       case 'mas': v = viewMas(); break;
@@ -1108,11 +1373,12 @@
     document.getElementById('hdr').innerHTML = `${v.back ? `<a class="back" href="${v.back}">‹ Volver</a>` : ''}<span class="title">${esc(v.title)}</span>${v.pill || ''}`;
     document.getElementById('view').innerHTML = v.html;
     const tab = TAB_OF[name] || 'entrenar';
-    const pending = !dayComplete(S.checkins[today()]);
+    const pending = !dayDone(today());
     document.getElementById('tabs').hidden = !!v.bare;
     document.getElementById('tabs').innerHTML = v.bare ? '' : TABS.map(([id, label]) => `<a href="#/${id}" class="${tab === id ? 'on' : ''}" ${tab === id ? 'aria-current="page"' : ''}>${ICONS[id]}<span>${label}</span>${id === 'checkin' && pending ? '<span class="dot" aria-label="pendiente"></span>' : ''}</a>`).join('');
     document.title = `${v.title} · Plan ${PERSON}`;
     if (key !== lastRoute) { window.scrollTo(0, 0); lastRoute = key; }
+    if (name === 'nutricion') setupMacrobar(); else if (mbObs) { mbObs.disconnect(); mbObs = null; }
     renderTimer();
   }
 
@@ -1326,7 +1592,7 @@
     'fp-pick': el => {
       const f = findFood(el.dataset.fid); if (!f || !picker) return;
       picker.sel = f;
-      picker.grams = picker.target ? eqGrams(picker.target, f) : (f.u ? f.u[1] : 100);
+      picker.grams = picker.target ? eqGrams(picker.target, f) : (S.usual[f.id] || (f.u ? f.u[1] : 100));
       picker.step = 'amount';
       renderPicker();
     },
@@ -1336,6 +1602,133 @@
       document.getElementById('fp-tot').innerHTML = amountTotals();
     },
     'fp-back': () => { picker.step = 'list'; renderPicker(); },
+    'fp-cat': el => { picker.cat = el.dataset.v; renderPicker(); },
+    'fp-quick': () => { picker.step = 'quick'; renderPicker(); },
+    'qa-save': () => {
+      const v = id => num(document.getElementById(id).value);
+      const p = Math.max(0, v('qa-p') || 0), c = Math.max(0, v('qa-c') || 0), g = Math.max(0, v('qa-g') || 0);
+      let kcal = v('qa-kcal');
+      if (kcal === null) kcal = Math.round(p * 4 + c * 4 + g * 9);
+      if (!(kcal > 0) || kcal > 5000) { toast('Anota las calorías o los macros'); return; }
+      const n = document.getElementById('qa-n').value.trim() || 'Agregado rápido';
+      const day = foodDay(picker.date);
+      day.extra.push({ id: 'x' + Date.now(), meal: picker.meal, n, grams: null, kcal: Math.round(kcal), p: r1(p), g: r1(g), c: r1(c) });
+      save(); markDirty('food', picker.date);
+      closeSheet(); picker = null; render(); toast('Agregado');
+    },
+    'edit-food': el => {
+      const date = nutDate();
+      const day = S.food[date] || { on: [] };
+      const f = mealsFor(date, day).flatMap(m => m.foods).find(x => x.id === el.dataset.id);
+      if (!f) return;
+      if (f.extra) {
+        const x = (day.extra || []).find(y => y.id === f.id);
+        const food = x && x.fid ? findFood(x.fid) : null;
+        editor = { date, id: f.id, kind: 'extra', food, val: x && x.grams ? x.grams : '' };
+      } else if (f.swappedFrom) {
+        const sw = day.swaps[f.id];
+        editor = { date, id: f.id, kind: 'swap', food: findFood(sw.fid), val: sw.grams };
+      } else {
+        editor = { date, id: f.id, kind: 'plan', food: null, val: (day.qty && day.qty[f.id]) || 1 };
+      }
+      renderEditor();
+    },
+    'ed-set': el => {
+      editor.val = Number(el.dataset.v);
+      const inp = document.getElementById('ed-v'); if (inp) inp.value = String(editor.val).replace('.', ',');
+      document.getElementById('ed-tot').innerHTML = macroTiles(editorCalc());
+    },
+    'ed-save': () => {
+      const e = editor; if (!e) return;
+      const v = num(e.val);
+      const day = foodDay(e.date);
+      if (e.kind === 'plan') {
+        if (!(v > 0) || v > 10) { toast('Escribe cuántas porciones (ej.: 1,5)'); return; }
+        day.qty = day.qty || {};
+        if (v === 1) delete day.qty[e.id]; else day.qty[e.id] = r1(v * 100) / 100;
+        if (!day.on.includes(e.id)) day.on.push(e.id);
+      } else {
+        if (!(v > 0) || v > 3000) { toast('Escribe los gramos'); return; }
+        const entry = Object.assign({ fid: e.food.id, n: e.food.n, grams: r1(v) }, portion(e.food, v));
+        if (e.kind === 'swap') day.swaps[e.id] = entry;
+        else { const i = day.extra.findIndex(x => x.id === e.id); if (i >= 0) day.extra[i] = Object.assign({}, day.extra[i], entry); }
+        S.usual[e.food.id] = r1(v);
+      }
+      save(); markDirty('food', e.date);
+      closeSheet(); editor = null; render(); toast('Guardado');
+    },
+    unqty: el => {
+      const date = nutDate(); const day = foodDay(date);
+      if (day.qty) delete day.qty[el.dataset.id];
+      save(); markDirty('food', date); render();
+    },
+    'meal-all': el => {
+      const date = nutDate(); const day = foodDay(date);
+      const m = mealsFor(date, day).find(x => x.id === el.dataset.meal); if (!m) return;
+      const ids = m.foods.filter(f => !f.extra && !f.free).map(f => f.id);
+      const all = ids.every(id => day.on.includes(id));
+      day.on = all ? day.on.filter(id => !ids.includes(id)) : day.on.concat(ids.filter(id => !day.on.includes(id)));
+      save(); markDirty('food', date); render();
+    },
+    'water-other': () => {
+      openSheet(`<h2>Agregar agua</h2><div class="q"><label for="w-ml">¿Cuánto tomaste?</label><div class="inp-u"><input class="inp" id="w-ml" inputmode="numeric" autocomplete="off" placeholder="350"><span class="u">ml</span></div></div>
+        <button class="btn block" data-a="water-save">Agregar</button><button class="btn block ghost" data-a="close">Cancelar</button>`);
+      const i = document.getElementById('w-ml'); if (i) i.focus();
+    },
+    'water-save': () => {
+      const ml = num(document.getElementById('w-ml').value);
+      if (!(ml > 0) || ml > 5000) { toast('Escribe los ml (ej.: 350)'); return; }
+      const date = nutDate(); const day = foodDay(date);
+      day.water = Math.max(0, (day.water || 0) + Math.round(ml));
+      save(); markDirty('food', date); closeSheet(); render();
+    },
+    'copy-day': () => {
+      const date = nutDate();
+      const days = Array.from({ length: 21 }, (_, i) => addDays(date, -(i + 1))).filter(d => { const x = S.food[d]; return x && ((x.on || []).length || (x.extra || []).length); });
+      const rows = days.map(d => {
+        const t = CORE.dayIntake(block(d).phase === 'cut', S.food[d]);
+        return `<button class="fp-item" data-a="copy-day-do" data-d="${d}"><span class="grow"><span class="t">${esc(cap(fmtDay(d)))}</span><span class="s">P ${t.p} · C ${t.c} · G ${t.g}${dayHasCustom(S.food[d]) ? ' · con cambios' : ''}</span></span><span class="r"><b>${nf(t.kcal, 0)}</b>kcal</span></button>`;
+      }).join('');
+      openSheet(`<h2>Copiar un día completo</h2><p class="muted small">Copia lo que marcaste, los cambios y los agregados de otro día a ${esc(date === today() ? 'hoy' : fmtDay(date))}. Reemplaza lo que haya marcado; el agua y la nota se mantienen.</p>
+        <div class="fp-list">${rows || '<p class="muted small">No hay días anteriores con comidas registradas.</p>'}</div>
+        <button class="btn block ghost" data-a="close">Cancelar</button>`);
+    },
+    'copy-day-do': el => {
+      const date = nutDate(); const src = S.food[el.dataset.d]; if (!src) return;
+      const day = foodDay(date);
+      const copy = JSON.parse(JSON.stringify(src));
+      day.on = copy.on || [];
+      day.swaps = copy.swaps || {};
+      day.qty = copy.qty || {};
+      day.extra = (copy.extra || []).map((x, i) => Object.assign({}, x, { id: 'x' + Date.now() + i }));
+      save(); markDirty('food', date); closeSheet(); render(); toast('Día copiado');
+    },
+    'restore-day': el => {
+      if (el.dataset.confirm !== '1') { el.dataset.confirm = '1'; el.textContent = 'Toca otra vez: se borran cambios y agregados'; return; }
+      const date = el.dataset.d; const day = foodDay(date);
+      day.swaps = {}; day.extra = []; day.qty = {};
+      save(); markDirty('food', date); render(); toast('Dieta base restaurada');
+    },
+    skip: el => {
+      const r = ROUTINES[el.dataset.r];
+      openSheet(`<h2>Saltar ${esc(r.name)}</h2><p class="muted small">Queda marcado como saltado esta semana y ${esc(S.settings.coachName)} lo ve en tu check-in. Si después lo haces, igual puedes registrarlo.</p>
+        <div class="q"><label for="skip-why">¿Por qué? <span class="hint">opcional</span></label><textarea id="skip-why" placeholder="Ej.: viaje, enfermedad, mucho cansancio…"></textarea></div>
+        <button class="btn block danger" data-a="skip-save" data-r="${r.id}">Saltar entrenamiento</button><button class="btn block ghost" data-a="close">Cancelar</button>`);
+    },
+    'skip-save': el => {
+      const t = today();
+      const c = S.checkins[t] = S.checkins[t] || {};
+      c.skips = (c.skips || []).filter(x => x.rid !== el.dataset.r).concat({ rid: el.dataset.r, reason: document.getElementById('skip-why').value.trim(), at: Date.now() });
+      save(); markDirty('checkin', t); closeSheet(); location.hash = '#/entrenar'; toast('Entrenamiento saltado');
+    },
+    unskip: el => {
+      const monday = mondayOf(today());
+      for (let i = 0; i < 7; i++) {
+        const d = addDays(monday, i); const c = S.checkins[d];
+        if (c && c.skips && c.skips.some(x => x.rid === el.dataset.r)) { c.skips = c.skips.filter(x => x.rid !== el.dataset.r); save(); markDirty('checkin', d); }
+      }
+      render(); toast('Listo, ya no está saltado');
+    },
     'fp-create': () => { picker.step = 'create'; renderPicker(); },
     'fc-save': () => {
       const v = id => document.getElementById(id).value.trim();
@@ -1368,6 +1761,7 @@
         day.extra.push(Object.assign({ id: 'x' + Date.now(), meal: p.meal }, entry));
       }
       S.recentFoods = [p.sel.id].concat(S.recentFoods.filter(id => id !== p.sel.id)).slice(0, 12);
+      S.usual[p.sel.id] = r1(g);
       save(); markDirty('food', p.date);
       closeSheet(); picker = null; render();
       toast(p.target ? 'Cambio guardado' : 'Alimento agregado');
@@ -1375,12 +1769,12 @@
     unswap: el => {
       const date = nutDate(); const day = foodDay(date);
       delete day.swaps[el.dataset.id];
-      save(); markDirty('food', date); render();
+      save(); markDirty('food', date); closeSheet(); render();
     },
     'del-extra': el => {
       const date = nutDate(); const day = foodDay(date);
       day.extra = day.extra.filter(x => x.id !== el.dataset.id);
-      save(); markDirty('food', date); render();
+      save(); markDirty('food', date); closeSheet(); render();
     },
     'ci-set': el => {
       const date = el.dataset.d, k = el.dataset.k, v = el.dataset.v;
@@ -1490,12 +1884,22 @@
     const t = e.target;
     if (t.id === 'fp-q' && picker) {
       picker.q = t.value;
-      document.getElementById('fp-results').innerHTML = resultsHtml(t.value);
+      document.getElementById('fp-results').innerHTML = resultsHtml(t.value, picker.cat || '');
       return;
     }
     if (t.id === 'fp-g' && picker) {
       picker.grams = t.value;
       document.getElementById('fp-tot').innerHTML = amountTotals();
+      return;
+    }
+    if (t.id === 'ed-v' && editor) {
+      editor.val = t.value;
+      document.getElementById('ed-tot').innerHTML = macroTiles(editorCalc());
+      return;
+    }
+    if (t.dataset.nnote) {
+      foodDay(t.dataset.nnote).note = t.value;
+      save(); markDirty('food', t.dataset.nnote);
       return;
     }
     if (t.dataset.draft && S.active) {

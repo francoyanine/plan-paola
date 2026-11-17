@@ -278,6 +278,9 @@
     });
     Object.entries(recs.checkin).filter(([d]) => d >= addDays(today(), -7)).sort().reverse().forEach(([d, c]) => {
       if (c.nota) alerts.push({ date: d, html: `<b>Nota del día:</b> ${esc(c.nota)}` });
+      if (c.fuera === 'si') alerts.push({ date: d, html: `<b>Fuera de lo común:</b> ${esc(c.fueraTxt || 'sí (sin detalle)')}` });
+      if (c.estres === 'alto') alerts.push({ date: d, html: 'Estrés alto en el check-in.' });
+      (c.skips || []).forEach(x => alerts.push({ date: d, html: `${ROUTINES[x.rid] ? kindTag(x.rid) : ""} Saltó el entrenamiento${x.reason ? ': ' + esc(x.reason) : ''}.` }));
       if (num(c.hombro) >= 4) alerts.push({ date: d, html: `Dolor de hombro ${c.hombro}/10 en el check-in.` });
     });
     parts.push(`<section class="card flush"><div style="padding:14px 16px 4px"><h3>Mensajes y alertas</h3></div><div class="list">${alerts.length
@@ -521,19 +524,26 @@
     sec('Check-in');
     row('Check-in del día', info.map(x => {
       if (x.d > today()) return cell('');
-      const miss = C.checkinMissing(x.c);
+      const miss = C.checkinMissing(x.c, x.d, x.ses.length > 0);
       return cell(miss.length ? `Faltan ${miss.length}<br><span class="small">${esc(miss.join(', '))}</span>` : 'Completo ✓', miss.length ? 'bad' : 'good');
-    }), `<td class="avg">${info.filter(x => x.d <= today() && !C.checkinMissing(x.c).length).length}/${info.filter(x => x.d <= today()).length}</td>`);
+    }), `<td class="avg">${info.filter(x => x.d <= today() && x.c && !C.checkinMissing(x.c, x.d, x.ses.length > 0).length).length}/${info.filter(x => x.d <= today()).length}</td>`);
     sec('Biofeedback');
     row('Peso en ayunas', info.map(x => cell(x.c ? (x.c.noPeso ? 'No se pesó' : (num(x.c.peso) ? nf(num(x.c.peso), 2) : '')) : '')), avgCell(info.map(x => (x.c && !x.c.noPeso ? num(x.c.peso) : null)), v => nf(v, 2) + ' kg'));
     row('Energía', info.map(x => { const v = x.c && x.c.energy; return cell(v ? { baja: 'Baja', promedio: 'Promedio', alta: 'Alta' }[v] : '', v === 'alta' ? 'good' : (v === 'baja' ? 'bad' : '')); }));
+    row('Estrés', info.map(x => { const v = x.c && x.c.estres; return cell(v ? C.ESTRES[v] : '', v === 'bajo' ? 'good' : (v === 'alto' ? 'bad' : '')); }));
+    row('Fuera de lo común', info.map(x => { const v = x.c && x.c.fuera; return cell(v === 'si' ? esc(x.c.fueraTxt || 'Sí') : (v === 'no' ? 'No' : ''), v === 'si' ? 'bad txt' : ''); }));
     if (PAIN) row('Dolor de hombro', info.map(x => { const v = x.c ? num(x.c.hombro) : null; return cell(v !== null ? v + '/10' : '', v === null ? '' : (v >= 4 ? 'bad' : (v <= 1 ? 'good' : ''))); }), avgCell(info.map(x => (x.c ? num(x.c.hombro) : null)), v => nf(v, 1)));
     sec('Entrenamiento');
     row('Entrenamiento (hecho / plan)', info.map(x => {
       const done = x.ses.map(s => `${ROUTINES[s.routine].name} ✓`).join('<br>');
       const plan = x.plan ? `<span class="muted small">plan: ${ROUTINES[x.plan].name}</span>` : '<span class="muted small">Descanso</span>';
-      return cell(done ? `${done}<br>${plan}` : plan, done ? 'good' : '');
+      const c = x.c || {};
+      const said = !done && c.entreno ? (c.entreno === 'descanso' ? 'Descanso' : (c.entreno === 'otro' ? 'Otro: ' + esc(c.entrenoTxt || '') : (ROUTINES[c.entreno] ? ROUTINES[c.entreno].name + ' (anotado)' : ''))) : '';
+      const skips = (c.skips || []).map(s => `Saltó ${ROUTINES[s.rid] ? ROUTINES[s.rid].name : s.rid}${s.reason ? ': ' + esc(s.reason) : ''}`).join('<br>');
+      const body = [done, said, skips, plan].filter(Boolean).join('<br>');
+      return cell(body, done ? 'good' : (skips ? 'bad' : ''));
     }));
+    row('Cardio / actividad extra', info.map(x => { const c = x.c || {}; return cell([c.cardio === 'si' ? 'Cardio' + (c.cardioTxt ? ': ' + esc(c.cardioTxt) : '') : '', c.extraAct === 'si' ? 'Extra' + (c.extraActTxt ? ': ' + esc(c.extraActTxt) : '') : ''].filter(Boolean).join('<br>') || (c.cardio === 'no' ? 'No' : ''), 'txt'); }));
     // Más de 4 horas suele ser un entrenamiento que quedó abierto: se marca para revisarlo.
     row('Duración', info.map(x => cell(x.ses.map(s => `${Math.floor(s.minutes / 60) ? Math.floor(s.minutes / 60) + ' h ' : ''}${s.minutes % 60} m${s.minutes > 240 ? ' <span class="small">(quedó abierto)</span>' : ''}`).join('<br>'), x.ses.some(s => s.minutes > 240) ? 'bad' : '')));
     row('Dificultad', info.map(x => cell(x.ses.filter(s => s.difficulty).map(s => s.difficulty + '/5').join('<br>'))));
@@ -546,7 +556,8 @@
     row('Proteína / meta (g)', info.map(x => cell(logged(x) ? `${x.it.p}<span class="muted">/${x.tg.p}</span>` : '', logged(x) ? ratio(x.it.p, x.tg.p, 0.9, 1.5) : '')));
     row('Carbos / meta (g)', info.map(x => cell(logged(x) ? `${x.it.c}<span class="muted">/${x.tg.c}</span>` : '', logged(x) ? ratio(x.it.c, x.tg.c, 0.8, 1.2) : '')));
     row('Grasas / meta (g)', info.map(x => cell(logged(x) ? `${x.it.g}<span class="muted">/${x.tg.g}</span>` : '', logged(x) ? ratio(x.it.g, x.tg.g, 0.8, 1.2) : '')));
-    row('Agua / meta (L)', info.map(x => { const v = x.it ? x.it.water / 1000 : null; return cell(v ? `${nf(v, 2)}<span class="muted">/2</span>` : '', v ? (v >= 2 ? 'good' : (v < 1.2 ? 'bad' : '')) : ''); }));
+    const wg = (Number(window.DATA.water) || 2000) / 1000;
+    row('Agua / meta (L)', info.map(x => { const v = x.it ? x.it.water / 1000 : null; return cell(v ? `${nf(v, 2)}<span class="muted">/${nf(wg, 1)}</span>` : '', v ? (v >= wg ? 'good' : (v < wg * 0.6 ? 'bad' : '')) : ''); }));
     row('Plan marcado', info.map(x => cell(x.it && x.it.planned ? `${Math.round(x.it.eaten / x.it.planned * 100)} %` : '', x.it && x.it.planned ? (x.it.eaten / x.it.planned >= 0.85 ? 'good' : (x.it.eaten / x.it.planned < 0.5 ? 'bad' : '')) : '')));
     row('Cambios y extras', info.map(x => cell(x.it && (x.it.swaps || x.it.extras) ? [x.it.swaps ? x.it.swaps + ' cambio' + (x.it.swaps > 1 ? 's' : '') : '', x.it.extras ? x.it.extras + ' extra' + (x.it.extras > 1 ? 's' : '') : ''].filter(Boolean).join(' · ') : '')));
     sec('Sueño');
@@ -555,6 +566,7 @@
     row('Horas', info.map(x => { const v = sleepMin(x); return cell(v !== null ? fmtSleep(v) : '', v === null ? '' : (v >= 420 ? 'good' : (v < 360 ? 'bad' : ''))); }), avgCell(info.map(sleepMin), fmtSleep));
     sec('Notas');
     row('Nota del día', info.map(x => cell(x.c && x.c.nota ? esc(x.c.nota) : '', 'txt')));
+    row('Nota de comidas', info.map(x => { const f = recs.food[x.d]; return cell(f && f.note ? esc(f.note) : '', 'txt'); }));
     row('Mensajes de ejercicios', info.map(x => cell(x.ses.flatMap(s => Object.values(s.ex).filter(e => e.note).map(e => `<b>${esc(e.name)}:</b> ${esc(e.note)}`)).join('<br>'), 'txt')));
     const head = `<tr><th class="stick">Campo</th>${info.map(x => `<th class="${x.d === today() ? 'cur' : ''}">D${x.i + 1}<br>${DOW[x.i]}<br><span class="muted">${esc(fmtShort(x.d))}</span></th>`).join('')}<th>Prom.</th></tr>`;
     const ses = sessionsSorted().reverse();

@@ -150,9 +150,11 @@
   // Comidas del día: plan de la fase, cambios de alimento y extras. day = registro de comida del día.
   const r1 = n => Math.round(n * 10) / 10;
   const fmtM = n => String(n >= 10 ? Math.round(n) : r1(n)).replace('.', ',');
+  // day.qty[id] = porciones del plan (1,5 = una vez y media lo indicado). Los extras sin gramos son agregados rápidos.
   function mealsForDay(cut, day) {
     const swaps = (day && day.swaps) || {};
     const extra = (day && day.extra) || [];
+    const qty = (day && day.qty) || {};
     return window.DATA.MEALS.map(m => ({
       id: m.id, name: m.name,
       foods: m.foods.map(f => {
@@ -162,9 +164,13 @@
           base = Object.assign({}, f, f.cut, { cutPortion: true });
         }
         const sw = swaps[f.id];
+        const k = Number(qty[f.id]);
+        if (!sw && k > 0 && k !== 1 && !base.free) {
+          return Object.assign({}, base, { qty: `${fmtM(k)} × ${base.qty}`, kcal: Math.round(base.kcal * k), p: r1(base.p * k), g: r1((base.g || 0) * k), c: r1((base.c || 0) * k), factor: k, plan: base });
+        }
         if (!sw) return base;
         return Object.assign({}, base, { name: sw.n, qty: `${fmtM(sw.grams)} g`, kcal: sw.kcal, p: sw.p, g: sw.g, c: sw.c, estimate: false, free: false, fixed: false, swappedFrom: base.name, plan: base });
-      }).filter(Boolean).concat(extra.filter(x => x.meal === m.id).map(x => ({ id: x.id, name: x.n, qty: `${fmtM(x.grams)} g`, kcal: x.kcal, p: x.p, g: x.g, c: x.c, extra: true })))
+      }).filter(Boolean).concat(extra.filter(x => x.meal === m.id).map(x => ({ id: x.id, name: x.n, qty: x.grams ? `${fmtM(x.grams)} g` : 'Agregado rápido', kcal: x.kcal, p: x.p, g: x.g, c: x.c, extra: true, quick: !x.grams })))
     }));
   }
   function dayIntake(cut, day) {
@@ -249,7 +255,10 @@
   }
 
   // Datos que faltan en el check-in de un día. Todos son obligatorios, entrene o no ese día.
-  function checkinMissing(c) {
+  // Desde CI_V2_FROM se suman estrés, «algo fuera de lo común» y qué entrenamiento hizo (si no registró una sesión ese día).
+  const CI_V2_FROM = '2026-11-17';
+  const ESTRES = { alto: 'Alto', promedio: 'Promedio', bajo: 'Bajo' };
+  function checkinMissing(c, date, trained) {
     const pain = window.DATA.pain;
     const has = v => v !== undefined && v !== null && String(v).trim() !== '';
     const x = c || {};
@@ -261,6 +270,11 @@
     if (!x.noPeso && !has(x.peso)) miss.push('peso (o «no me pesé»)');
     if (pain && !has(x.hombro)) miss.push('dolor de ' + pain.label);
     if (!has(x.energy)) miss.push('energía');
+    if (date && date >= CI_V2_FROM) {
+      if (!has(x.fuera)) miss.push('algo fuera de lo común');
+      if (!has(x.estres)) miss.push('estrés');
+      if (!trained && !has(x.entreno)) miss.push('qué entrenamiento');
+    }
     return miss;
   }
 
@@ -268,6 +282,6 @@
     DOW, DOW_LONG, MONTHS, pad, ymd, parse, today, addDays, dowIdx, mondayOf, daysBetween, fmtDay, fmtShort, nf, num, esc, avg,
     blockFor, totalWeeks, weekStart, RIR_SCHEMES, parseRir, defaultScheme, rirForSet, rirList,
     resolveEx, isBodyweight, flexDayHtml, kcalFieldsHtml, hasVariants, findExercise, setText, setsText, lastPerfIn, autoSuggest, scheduleFor, pullToRefresh,
-    presSets, presKgAt, hasKg, progressFrom, checkinMissing, setDelta, mealsForDay, dayIntake, targetsFor, fmtM
+    presSets, presKgAt, hasKg, progressFrom, checkinMissing, CI_V2_FROM, ESTRES, setDelta, mealsForDay, dayIntake, targetsFor, fmtM
   };
 })();
